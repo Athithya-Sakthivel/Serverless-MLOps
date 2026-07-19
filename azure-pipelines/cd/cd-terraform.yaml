@@ -1,25 +1,14 @@
-# ==============================================================================
-# CD Terraform – Apply Infrastructure Plan
-#
-# Manually triggered after ci-terraform produces a reviewed plan artifact.
-# Uses the pipeline resource picker to select which CI run's plan to apply.
-# Applies the EXACT plan artifact with no re-plan.
-# ==============================================================================
-
 trigger: none
 
 resources:
   pipelines:
-    - pipeline: ciTerraform                              # Alias used within this pipeline
-      source: Serverless-MLOps-terraform-ci              # Exact pipeline name in Azure DevOps
-      branch: main                                       # Default branch for artifact resolution
-      trigger: none                                      # Do not auto-trigger on CI completion
+    - pipeline: ciTerraform
+      source: Serverless-MLOps-terraform-ci
+      branch: main
+      trigger: none
 
 pool:
   vmImage: ubuntu-24.04
-
-variables:
-  - group: 'terraform-cd-vars'
 
 jobs:
   - deployment: apply_terraform
@@ -33,8 +22,6 @@ jobs:
               clean: true
               fetchDepth: 1
 
-            # Downloads automatically in deployment jobs, but explicit for clarity.
-            # When running manually, use the Resources picker to select the CI run.
             - download: ciTerraform
               artifact: terraform-plan
               displayName: 'Download Terraform plan artifact'
@@ -61,13 +48,11 @@ jobs:
                   export TF_IN_AUTOMATION="true"
                   export TF_INPUT="false"
 
-                  # Locate the plan file from the downloaded artifact
                   PLAN_DIR="$(Pipeline.Workspace)/ciTerraform/terraform-plan"
                   PLAN_FILE=$(find "$PLAN_DIR" -maxdepth 1 -name "*.tfplan" -type f | head -n1)
 
                   if [[ -z "$PLAN_FILE" ]]; then
                     echo "ERROR: No .tfplan file found in $PLAN_DIR"
-                    echo "Contents of artifact directory:"
                     find "$PLAN_DIR" -type f || true
                     exit 1
                   fi
