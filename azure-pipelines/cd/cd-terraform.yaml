@@ -23,7 +23,7 @@ jobs:
               fetchDepth: 1
 
             - task: AzureCLI@2
-              displayName: 'Terraform plan and apply'
+              displayName: 'Run Terraform plan & apply'
               inputs:
                 azureSubscription: 'azdo-oidc-cd'
                 addSpnToEnvironment: true
@@ -32,33 +32,18 @@ jobs:
                 inlineScript: |
                   set -euo pipefail
 
-                  # Install OpenTofu
-                  TOFU_VERSION='1.12.4'
-                  curl -fsSL -o /tmp/tofu.zip \
-                    "https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_linux_amd64.zip"
-                  unzip -o /tmp/tofu.zip -d /tmp/tofu-bin
-                  sudo cp /tmp/tofu-bin/tofu /usr/local/bin/tofu
-                  sudo chmod +x /usr/local/bin/tofu
-                  tofu version
-
                   cd "$(Build.SourcesDirectory)/src/terraform/main"
                   chmod +x ./run.sh
 
-                  # CD identity
+                  # Pass the CD service principal identity to run.sh
                   export ARM_CLIENT_ID="${servicePrincipalId}"
                   export ARM_TENANT_ID="${tenantId}"
                   export ARM_OIDC_TOKEN="${idToken}"
                   export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
                   export ARM_USE_OIDC="true"
-                  export ARM_USE_CLI="false"
                   export TF_IN_AUTOMATION="true"
-                  export TF_INPUT="false"
 
-                  # Initialize backend with CD identity
-                  tofu init -reconfigure -input=false
-
-                  # Plan
+                  # run.sh will auto-detect OIDC auth and use the same
+                  # backend resources as bootstrap.sh created.
                   ./run.sh --plan --env prod
-
-                  # Apply
-                  ./run.sh --apply-plan .plans/prod/prod.tfplan --env prod
+                  ./run.sh --apply-plan .plans/prod/plan.tfplan --env prod

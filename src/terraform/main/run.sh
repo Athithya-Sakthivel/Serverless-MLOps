@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # terraform/main/run.sh
 # Production-ready, idempotent wrapper to manage OpenTofu (tofu) lifecycle:
-#  - --plan      : init backend, fmt/validate (auto-fix), produce a plan file
+#  - --plan      : init backend, fmt/validate, produce a plan file
 #  - --create    : init backend, fmt/validate, plan, then apply -auto-approve
 #  - --destroy   : init backend, then destroy (requires --yes-delete)
 #  - --validate  : init backend and validate backend / prereqs
@@ -18,10 +18,9 @@
 #  - Script does NOT commit formatted changes to git; it only auto-formats files in-place.
 #  - State is stored in Azure Storage; the storage account is created if missing.
 #  - State locking is native (blob leases).
-#  - The script computes a hash from your subscription ID to name the storage account
-#    consistently with the bootstrap.
+#  - The script computes the same deterministic names as bootstrap.sh when
+#    TF_BACKEND_* variables are not set, using the subscription suffix.
 #  - Script exits non-zero on any infrastructure mutation failure.
-
 
 IFS=$'\n\t'
 
@@ -102,14 +101,22 @@ choose_auth_mode() {
   fi
 }
 
+# ------------------------------------------------------------------------------
+# compute_defaults – uses the same naming as bootstrap.sh when env vars are absent
+# ------------------------------------------------------------------------------
 compute_defaults() {
-  local sub_hash
-  sub_hash="$(printf '%s' "$SUBSCRIPTION_ID" | sha256sum | cut -c1-22)"
+  # Derive the subscription suffix (last 6 chars) exactly as bootstrap.sh does
+  local subscription_suffix="${SUBSCRIPTION_SUFFIX:-${SUBSCRIPTION_ID: -6}}"
 
-  TF_BACKEND_RESOURCE_GROUP="${TF_BACKEND_RESOURCE_GROUP:-${TF_STATE_RG_PREFIX:-tf-state-agent}-${sub_hash}}"
-  TF_BACKEND_STORAGE_ACCOUNT="${TF_BACKEND_STORAGE_ACCOUNT:-${TF_STATE_SA_PREFIX:-st}${sub_hash}}"
-  TF_BACKEND_CONTAINER="${TF_BACKEND_CONTAINER:-${TF_STATE_CONTAINER:-tfstate}}"
-  TF_BACKEND_KEY_PREFIX="${TF_BACKEND_KEY_PREFIX:-main/$sub_hash}"
+  # Use the bootstrap naming convention if the variables are not already set.
+  # Bootstrap exports:
+  #   STATE_RG="rg-sm-state-${SUBSCRIPTION_SUFFIX}"
+  #   STATE_STORAGE_ACC_NAME="smstatesa${SUBSCRIPTION_SUFFIX}"
+  #   STATE_TF_CONTAINER_NAME="tfbackend"
+  TF_BACKEND_RESOURCE_GROUP="${TF_BACKEND_RESOURCE_GROUP:-rg-sm-state-${subscription_suffix}}"
+  TF_BACKEND_STORAGE_ACCOUNT="${TF_BACKEND_STORAGE_ACCOUNT:-smstatesa${subscription_suffix}}"
+  TF_BACKEND_CONTAINER="${TF_BACKEND_CONTAINER:-tfbackend}"
+  TF_BACKEND_KEY_PREFIX="${TF_BACKEND_KEY_PREFIX:-main/terraform}"
 }
 
 build_backend_config() {
@@ -129,7 +136,6 @@ EOF
       ;;
     oidc)
       [[ -n "${ARM_CLIENT_ID:-}" ]] || fail "ARM_CLIENT_ID is required for oidc auth"
-      [[ -n "${ARM_TENANT_ID:-$TENANT_ID}" ]] || true
       [[ -n "${ARM_OIDC_TOKEN:-}" ]] || fail "ARM_OIDC_TOKEN is required for oidc auth"
       cat >"$backend_config" <<EOF
 resource_group_name  = "$TF_BACKEND_RESOURCE_GROUP"
