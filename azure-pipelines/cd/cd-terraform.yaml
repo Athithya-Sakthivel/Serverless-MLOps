@@ -32,6 +32,15 @@ jobs:
                 inlineScript: |
                   set -euo pipefail
 
+                  # Install OpenTofu
+                  TOFU_VERSION='1.12.4'
+                  curl -fsSL -o /tmp/tofu.zip \
+                    "https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_linux_amd64.zip"
+                  unzip -o /tmp/tofu.zip -d /tmp/tofu-bin
+                  sudo cp /tmp/tofu-bin/tofu /usr/local/bin/tofu
+                  sudo chmod +x /usr/local/bin/tofu
+                  tofu version
+
                   cd "$(Build.SourcesDirectory)/src/terraform/main"
                   chmod +x ./run.sh
 
