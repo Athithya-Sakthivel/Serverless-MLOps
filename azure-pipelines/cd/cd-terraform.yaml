@@ -45,7 +45,11 @@ jobs:
                   export TF_IN_AUTOMATION="true"
                   export TF_INPUT="false"
 
-                  # Plan AND apply with the CD identity (no cross-identity artifact)
-                  ./run.sh --init --env prod --reconfigure
+                  # Initialize backend with CD identity
+                  tofu init -reconfigure -input=false
+
+                  # Plan
                   ./run.sh --plan --env prod
+
+                  # Apply
                   ./run.sh --apply-plan .plans/prod/prod.tfplan --env prod
