@@ -11,16 +11,16 @@
    *   **Azure Container Apps** (Compute)
    *   **Azure Monitor** (Application Insights & Log Analytics Workspace)
    *   **Azure Storage Account** (Terraform State Backend + ACR)
-   *   **Azure Container Registry (ACR)** (Private Endpoints per ADR-007)
-   *   **Cosmos DB** (Serverless, Private Endpoints per ADR-007)
+   *   **Azure Container Registry (ACR)** (Private Endpoints)
+   *   **Cosmos DB** (Serverless, Private Endpoints)
    *   **Key Vault** (Secrets Management)
-   *   **Virtual Network & Subnets** (Networking for PEPs/Service Tags)
-   *   **Managed Identities** (User-Assigned for ACA & MCP Tools)
+   *   **Azure Functions** (HTTP-triggered serverless compute)
+   *   **Identity & Access** (Microsoft Entra ID, SAMI, Workload Identity Federation, RBAC)
    *   **Azure DevOps Organization** (CI/CD Orchestration)
 
 ### PHASE 0.1: Clone the repo and build the devcontainer(Reproducible). This will take 10-20 minutes. 
 ```sh 
-cd $HOME && rm -rf incident-commander-ai && git clone https://github.com/Athithya-Sakthivel/incident-commander-ai && cd incident-commander-ai && code .
+cd $HOME && rm -rf Serverless-MLOps && git clone https://github.com/Athithya-Sakthivel/Serverless-MLOps.git && cd Serverless-MLOps && code .
 ```
 > ctrl + shift + P -> paste `Dev containers: Rebuild Container Without Cache` and enter
 
@@ -44,7 +44,7 @@ gh auth login
 ### PHASE 0.3 Create a private repo in your gh account
 
 ```sh
-export REPO_NAME="incident-commander-ai-1" # or any name
+export REPO_NAME="Serverless-MLOps-1" # or any name
 git remote remove origin 2>/dev/null || true
 gh repo create "$REPO_NAME" --private >/dev/null 2>&1
 REMOTE_URL="https://github.com/$(gh api user | jq -r .login)/$REPO_NAME.git"
