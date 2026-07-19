@@ -35,19 +35,17 @@ jobs:
                   cd "$(Build.SourcesDirectory)/src/terraform/main"
                   chmod +x ./run.sh
 
-                  # OIDC credentials from the CD service connection
+                  # CD identity
                   export ARM_CLIENT_ID="${servicePrincipalId}"
                   export ARM_TENANT_ID="${tenantId}"
                   export ARM_OIDC_TOKEN="${idToken}"
                   export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
                   export ARM_USE_OIDC="true"
                   export ARM_USE_CLI="false"
+                  export TF_IN_AUTOMATION="true"
+                  export TF_INPUT="false"
 
-                  # Force backend reinitialization with the CD identity
+                  # Plan AND apply with the CD identity (no cross-identity artifact)
                   ./run.sh --init --env prod --reconfigure
-
-                  # Plan with the CD identity
                   ./run.sh --plan --env prod
-
-                  # Apply that plan
                   ./run.sh --apply-plan .plans/prod/prod.tfplan --env prod
