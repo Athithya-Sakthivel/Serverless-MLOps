@@ -95,13 +95,6 @@ export TF_VAR_AZDO_ORG_SERVICE_URL="https://dev.azure.com/<organization_name>"
 export TF_VAR_AZDO_PERSONAL_ACCESS_TOKEN="<azure-devops-pat>"   # Generate at https://dev.azure.com/<organization_name>/_usersSettings/tokens
 export TF_VAR_AZDO_GITHUB_SERVICE_CONNECTION_PAT="<github-pat>" # Generate at https://github.com/settings/tokens/new
 
-# export AZURE_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
-# export SUBSCRIPTION_SUFFIX="${AZURE_SUBSCRIPTION_ID: -6}"
-# export STATE_RG="rg-sm-state-${SUBSCRIPTION_SUFFIX}"
-# export STATE_STORAGE_ACC_NAME="smstatesa${SUBSCRIPTION_SUFFIX}"
-# export STATE_TF_CONTAINER_NAME="tfbackend"
-# export TF_VAR_region="centralindia"
-
 bash src/terraform/bootstrap/bootstrap.sh --create
 sleep 20
 git add . && git commit -m "bootstrap extend" && git push origin main
