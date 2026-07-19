@@ -1,17 +1,27 @@
+# ==============================================================================
+# CD Terraform – Apply Infrastructure Plan
+#
+# Manually triggered after ci-terraform produces a reviewed plan artifact.
+# Applies the EXACT plan artifact with no re-plan.
+# ==============================================================================
+
 trigger: none
 
 resources:
   pipelines:
     - pipeline: ciTerraform
-      source: ci-terraform
+      source: Serverless-MLOps-terraform-ci    # ← matches the pipeline name created by Terraform
       trigger: none
 
 pool:
   vmImage: ubuntu-24.04
 
+variables:
+  - group: 'terraform-cd-vars'
+
 jobs:
   - deployment: apply_terraform
-    displayName: 'Apply Terraform'
+    displayName: 'Apply Terraform plan to production'
     environment: production
     strategy:
       runOnce:
@@ -23,7 +33,7 @@ jobs:
 
             - download: ciTerraform
               artifact: terraform-plan
-              displayName: 'Download Terraform plan'
+              displayName: 'Download Terraform plan artifact'
 
             - task: AzureCLI@2
               displayName: 'Apply Terraform plan'
@@ -34,6 +44,8 @@ jobs:
                 scriptLocation: inlineScript
                 inlineScript: |
                   set -euo pipefail
+
+                  echo "Applying Terraform plan from CI pipeline"
                   cd "$(Build.SourcesDirectory)/src/terraform/main"
                   chmod +x ./run.sh
 
@@ -42,7 +54,24 @@ jobs:
                   export ARM_OIDC_TOKEN="${idToken}"
                   export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
                   export ARM_USE_OIDC="true"
+                  export ARM_USE_CLI="false"
                   export TF_IN_AUTOMATION="true"
                   export TF_INPUT="false"
 
-                  ./run.sh --apply-plan "$(Pipeline.Workspace)/ciTerraform/terraform-plan/prod.tfplan" --env prod
+                  # The plan artifact is downloaded from the CI pipeline
+                  PLAN_FILE="$(Pipeline.Workspace)/ciTerraform/terraform-plan/prod.tfplan"
+
+                  if [[ ! -f "$PLAN_FILE" ]]; then
+                    # Fallback: try the CI pipeline's plan filename
+                    PLAN_FILE="$(Pipeline.Workspace)/ciTerraform/terraform-plan/plan.tfplan"
+                  fi
+
+                  if [[ ! -f "$PLAN_FILE" ]]; then
+                    echo "ERROR: No plan file found in the downloaded artifact"
+                    echo "Contents of artifact directory:"
+                    find "$(Pipeline.Workspace)/ciTerraform/terraform-plan" -type f || true
+                    exit 1
+                  fi
+
+                  echo "Using plan file: $PLAN_FILE"
+                  ./run.sh --apply-plan "$PLAN_FILE" --env prod
