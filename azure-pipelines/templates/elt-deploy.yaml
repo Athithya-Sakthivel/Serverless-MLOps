@@ -1,0 +1,24 @@
+parameters:
+  - name: functionAppName
+    type: string
+  - name: resourceGroup
+    type: string
+  - name: workingDirectory
+    type: string
+    default: 'src/workloads/elt'
+
+steps:
+  - checkout: self
+    clean: true
+    fetchDepth: 1
+
+  - task: AzureCLI@2
+    displayName: 'Deploy ELT Function App'
+    inputs:
+      azureSubscription: 'azdo-oidc-cd'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        set -euo pipefail
+        cd "$(Build.SourcesDirectory)/${{ parameters.workingDirectory }}"
+        func azure functionapp publish ${{ parameters.functionAppName }} --python --build remote

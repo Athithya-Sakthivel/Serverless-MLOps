@@ -1,0 +1,31 @@
+trigger:
+  batch: true
+  branches:
+    include:
+      - main
+      - feat/*
+  paths:
+    include:
+      - src/workloads/elt/**
+      - azure-pipelines/ci/ci-elt.yaml
+      - azure-pipelines/templates/python-ci.yaml
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: ubuntu-24.04
+
+variables:
+  - group: 'elt-ci-vars'
+
+steps:
+  - template: azure-pipelines/templates/python-ci.yaml
+    parameters:
+      serviceDirectory: 'src/workloads/elt'
+      pythonVersion: '3.11'
+      requirementsFile: 'src/workloads/elt/requirements-ci.txt'
+      devRequirementsFile: 'src/workloads/elt/requirements-ci.txt'   # same file for dev
+      includeDocker: false

@@ -1,0 +1,198 @@
+parameters:
+  - name: serviceDirectory
+    type: string
+  - name: pythonVersion
+    type: string
+    default: '3.14'
+  - name: requirementsFile
+    type: string
+  - name: devRequirementsFile
+    type: string
+  - name: includeDocker
+    type: boolean
+    default: false
+  - name: containerRepository
+    type: string
+    default: ''
+  - name: dockerfilePath
+    type: string
+    default: ''
+  - name: preTestSteps
+    type: stepList
+    default: []
+
+steps:
+  - checkout: self
+    clean: true
+    fetchDepth: 1
+
+  - task: UsePythonVersion@0
+    displayName: 'Use Python ${{ parameters.pythonVersion }}'
+    inputs:
+      versionSpec: '${{ parameters.pythonVersion }}'
+      architecture: 'x64'
+
+  - task: Cache@2
+    displayName: 'Cache pip'
+    inputs:
+      key: 'pip | "$(Agent.OS)" | ${{ parameters.pythonVersion }} | ${{ parameters.requirementsFile }} | ${{ parameters.devRequirementsFile }}'
+      restoreKeys: |
+        pip | "$(Agent.OS)" | ${{ parameters.pythonVersion }}
+        pip | "$(Agent.OS)"
+      path: '$(Pipeline.Workspace)/.cache/pip'
+
+  - bash: |
+      set -euo pipefail
+      python -m venv .venv
+      source .venv/bin/activate
+      python -m pip install --upgrade pip setuptools wheel
+      pip install --cache-dir "$(Pipeline.Workspace)/.cache/pip" \
+        -r "$(Build.SourcesDirectory)/${{ parameters.requirementsFile }}" \
+        -r "$(Build.SourcesDirectory)/${{ parameters.devRequirementsFile }}"
+      python -m pip check
+      ruff check "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
+      ruff format --check "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
+      mypy "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
+    displayName: 'Lint, type-check and install dependencies'
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+
+  - ${{ each step in parameters.preTestSteps }}:
+    - ${{ step }}
+
+  - bash: |
+      set -euo pipefail
+      source .venv/bin/activate
+      pytest "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}/tests" \
+        -v \
+        --junitxml="$(Build.SourcesDirectory)/test-results.xml"
+    displayName: 'Run tests'
+
+  - task: PublishTestResults@2
+    displayName: 'Publish test results'
+    condition: succeededOrFailed()
+    inputs:
+      testResultsFormat: 'JUnit'
+      testResultsFiles: 'test-results.xml'
+      testRunTitle: '${{ parameters.serviceDirectory }} tests'
+
+  - bash: |
+      set -euo pipefail
+      source .venv/bin/activate
+      mkdir -p "$(Build.ArtifactStagingDirectory)/security"
+      python -m pip install pip-audit
+      pip-audit -f json -o "$(Build.ArtifactStagingDirectory)/security/pip-audit.json"
+    displayName: 'Dependency vulnerability audit'
+
+  - bash: |
+      set -euo pipefail
+      mkdir -p "$(Build.ArtifactStagingDirectory)/security"
+      TRIVY_VERSION='0.72.0'
+      curl -fsSL -o /tmp/trivy.tar.gz \
+        "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+      tar -xzf /tmp/trivy.tar.gz -C /tmp trivy
+      /tmp/trivy fs \
+        --scanners vuln \
+        --format sarif \
+        --output "$(Build.ArtifactStagingDirectory)/security/trivy-fs.sarif" \
+        --severity HIGH,CRITICAL \
+        --exit-code 1 \
+        "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
+    displayName: 'Trivy filesystem scan'
+
+  # Optional Docker build – only when includeDocker is true
+  - ${{ if eq(parameters.includeDocker, true) }}:
+    - task: AzureCLI@2
+      displayName: 'Authenticate Docker to ACR'
+      condition: eq(variables['Build.SourceBranch'], 'refs/heads/main')
+      inputs:
+        azureSubscription: 'azdo-oidc-ci'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          set -euo pipefail
+          az acr login --name "$(containerRegistry)"
+
+    - bash: |
+        set -euo pipefail
+        export DOCKER_BUILDKIT=1
+        ROOT="$(Build.SourcesDirectory)"
+        CONTEXT="$ROOT/${{ parameters.serviceDirectory }}"
+        IMAGE="$(containerRegistry).azurecr.io/${{ parameters.containerRepository }}:$(Build.SourceVersion)"
+
+        docker buildx rm ci-builder >/dev/null 2>&1 || true
+        docker buildx create --name ci-builder --use >/dev/null
+        docker buildx inspect --bootstrap >/dev/null
+
+        if [ "${BUILD_SOURCEBRANCH}" = "refs/heads/main" ]; then
+          CACHE_REF="$(containerRegistry).azurecr.io/build-cache/${{ parameters.containerRepository }}:buildcache"
+          docker buildx build \
+            --platform linux/amd64 \
+            --pull \
+            --load \
+            --cache-from type=registry,ref="$CACHE_REF" \
+            --cache-to type=registry,ref="$CACHE_REF",mode=max \
+            --label org.opencontainers.image.revision="$(Build.SourceVersion)" \
+            --file "$ROOT/${{ parameters.dockerfilePath }}" \
+            --tag "$IMAGE" \
+            "$CONTEXT"
+        else
+          docker buildx build \
+            --platform linux/amd64 \
+            --pull \
+            --load \
+            --label org.opencontainers.image.revision="$(Build.SourceVersion)" \
+            --file "$ROOT/${{ parameters.dockerfilePath }}" \
+            --tag "$IMAGE" \
+            "$CONTEXT"
+        fi
+      displayName: 'Build container image'
+
+    - bash: |
+        set -euo pipefail
+        IMAGE="$(containerRegistry).azurecr.io/${{ parameters.containerRepository }}:$(Build.SourceVersion)"
+        mkdir -p "$(Build.ArtifactStagingDirectory)/security"
+        /tmp/trivy image \
+          --scanners vuln \
+          --format sarif \
+          --output "$(Build.ArtifactStagingDirectory)/security/trivy-image.sarif" \
+          --severity HIGH,CRITICAL \
+          --exit-code 1 \
+          "$IMAGE"
+      displayName: 'Scan container image'
+
+    - task: AzureCLI@2
+      displayName: 'Push image and publish deploy manifest'
+      condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+      inputs:
+        azureSubscription: 'azdo-oidc-ci'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          set -euo pipefail
+          IMAGE="$(containerRegistry).azurecr.io/${{ parameters.containerRepository }}:$(Build.SourceVersion)"
+          az acr login --name "$(containerRegistry)"
+          docker push "$IMAGE"
+
+          MANIFEST_DIR="$(Build.ArtifactStagingDirectory)/deploy-manifest"
+          mkdir -p "$MANIFEST_DIR"
+          IMAGE_REFERENCE="$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE")"
+          python -c "
+import json, os
+manifest = {
+    'serviceName': '${{ parameters.containerRepository }}',
+    'imageReference': '${IMAGE_REFERENCE}',
+    'buildId': os.environ['BUILD_BUILDID'],
+}
+with open('$MANIFEST_DIR/deploy-manifest.json','w') as f:
+    json.dump(manifest, f, indent=2)
+"
+      displayName: 'Push image and generate manifest'
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish deploy manifest'
+      condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/deploy-manifest'
+        artifact: 'deploy-manifest'
+        artifactType: 'pipeline'

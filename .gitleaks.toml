@@ -1,0 +1,8 @@
+title = "gitleaks config"
+
+[allowlist]
+description = "Ignore false positives in Terraform files"
+paths = [
+    '''src/terraform/bootstrap/iam\.tf''',
+    '''src/terraform/main/\.bootstrap\.generated\.env''',
+]

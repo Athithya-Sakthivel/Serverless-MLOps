@@ -1,0 +1,87 @@
+trigger: none
+
+resources:
+  pipelines:
+    - pipeline: ciElt
+      source: ci-elt
+      trigger:
+        branches:
+          include:
+            - main
+    - pipeline: ciMlTraining
+      source: ci-ml-training
+      trigger:
+        branches:
+          include:
+            - main
+
+parameters:
+  - name: deployELT
+    type: boolean
+    default: true
+  - name: deployML
+    type: boolean
+    default: true
+  - name: modelVersion
+    type: string
+    default: 'latest'
+
+pool:
+  vmImage: ubuntu-24.04
+
+variables:
+  - group: 'deployment-vars'
+
+stages:
+  - stage: staging
+    displayName: 'Staging'
+    jobs:
+      - ${{ if parameters.deployELT }}:
+        - template: azure-pipelines/templates/elt-deploy.yaml
+          parameters:
+            functionAppName: '$(FUNCTION_APP_NAME)-staging'
+            resourceGroup: '$(stagingRG)'
+
+      - ${{ if parameters.deployML }}:
+        - job: build_and_deploy_ml_staging
+          displayName: 'Build & deploy ML serving to staging'
+          steps:
+            - bash: |
+                # Download the MLflow model and build the serving image
+                pip install mlflow azure-ai-ml
+                export MLFLOW_TRACKING_URI="$(MLFLOW_TRACKING_URI)"
+                mlflow models download -m "models:/lead-scoring-onnx/${{ parameters.modelVersion }}" -d ./model
+                # Build Docker image
+                IMAGE="$(containerRegistry).azurecr.io/lead-scoring-api:$(Build.SourceVersion)"
+                docker build -t "$IMAGE" -f src/workloads/train/Dockerfile .
+                az acr login -n "$(containerRegistry)"
+                docker push "$IMAGE"
+                echo "##vso[task.setvariable variable=mlImage]$IMAGE"
+              displayName: 'Build ML serving image'
+
+            - template: azure-pipelines/templates/aca-deploy.yaml
+              parameters:
+                containerAppName: '$(CONTAINER_APP_NAME)-staging'
+                resourceGroup: '$(stagingRG)'
+                image: '$(mlImage)'
+
+  - stage: production
+    displayName: 'Production'
+    dependsOn: staging
+    condition: succeeded()
+    jobs:
+      - ${{ if parameters.deployELT }}:
+        - template: azure-pipelines/templates/elt-deploy.yaml
+          parameters:
+            functionAppName: '$(FUNCTION_APP_NAME)'
+            resourceGroup: '$(prodRG)'
+
+      - ${{ if parameters.deployML }}:
+        - job: deploy_ml_production
+          displayName: 'Canary deploy ML to production'
+          steps:
+            - template: azure-pipelines/templates/aca-deploy.yaml
+              parameters:
+                containerAppName: '$(CONTAINER_APP_NAME)'
+                resourceGroup: '$(prodRG)'
+                image: '$(mlImage)'    # reuse the image built in staging

@@ -1,0 +1,37 @@
+trigger:
+  batch: true
+  branches:
+    include:
+      - main
+      - feat/*
+  paths:
+    include:
+      - src/workloads/train/**
+      - azure-pipelines/ci/ci-ml-training.yaml
+      - azure-pipelines/templates/python-ci.yaml
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: ubuntu-24.04
+
+variables:
+  - group: 'ml-ci-vars'
+
+steps:
+  - template: azure-pipelines/templates/python-ci.yaml
+    parameters:
+      serviceDirectory: 'src/workloads/train'
+      pythonVersion: '3.11'
+      requirementsFile: 'src/workloads/train/requirements.txt'
+      devRequirementsFile: 'src/workloads/train/requirements-dev.txt'
+      includeDocker: false
+      preTestSteps:
+        - bash: |
+            set -euo pipefail
+            source .venv/bin/activate
+            python src/workloads/train/train.py    # runs training + registers model in MLflow
+          displayName: 'Train model and register in MLflow'
