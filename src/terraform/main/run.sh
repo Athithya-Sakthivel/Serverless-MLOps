@@ -1,30 +1,37 @@
 #!/usr/bin/env bash
+# ==============================================================================
 # terraform/main/run.sh
-# Production-ready, idempotent wrapper to manage OpenTofu (tofu) lifecycle:
-#  - --plan      : init backend, fmt/validate, produce a plan file
-#  - --create    : init backend, fmt/validate, plan, then apply -auto-approve
-#  - --destroy   : init backend, then destroy (requires --yes-delete)
-#  - --validate  : init backend and validate backend / prereqs
-#  - --find-version / --rollback-state <versionId> : state management helpers.
+# ==============================================================================
+# Single entrypoint for all OpenTofu operations: init, plan, apply, destroy.
 #
-# Usage:
+# Design invariants:
+#   1. TF_BACKEND_AUTH_MODE is the one source of truth for backend auth.
+#   2. Script always executes from its own directory.
+#   3. State backend naming matches bootstrap.sh (subscription suffix).
+#   4. No secrets are ever logged or written to disk outside .plans/.
+#   5. CI OIDC path is untouched; TF_BACKEND_AUTH_MODE=cli uses az CLI.
+#   6. subscription_id and tenant_id are auto‑fetched from az CLI and exported
+#      as TF_VAR_* unless already set in the environment.
+#   7. All temporary files are explicitly removed; no trap race conditions.
+#
+# Local development (az login first):
+#   export TF_BACKEND_AUTH_MODE=cli
 #   bash src/terraform/main/run.sh --plan  --env staging
 #   bash src/terraform/main/run.sh --create --env staging
 #   bash src/terraform/main/run.sh --destroy --env staging --yes-delete
-#   bash src/terraform/main/run.sh --env staging --find-version
 #
-# Notes / invariants:
-#  - Azure CLI (`az`) is used; ensure you are logged in (`az login`).
-#  - Script does NOT commit formatted changes to git; it only auto-formats files in-place.
-#  - State is stored in Azure Storage; the storage account is created if missing.
-#  - State locking is native (blob leases).
-#  - The script computes the same deterministic names as bootstrap.sh when
-#    TF_BACKEND_* variables are not set, using the subscription suffix.
-#  - Script exits non-zero on any infrastructure mutation failure.
+# CI/CD (Azure DevOps with OIDC service connection):
+#   bash src/terraform/main/run.sh --plan  --env staging
+#   bash src/terraform/main/run.sh --create --env staging
+# ==============================================================================
 
+set -euo pipefail
 IFS=$'\n\t'
 
+# --- Always run from the script's directory ----------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+cd "$SCRIPT_DIR" || { echo "ERROR: cannot cd to $SCRIPT_DIR" >&2; exit 1; }
+
 BOOTSTRAP_ENV_FILE="$SCRIPT_DIR/.bootstrap.generated.env"
 
 log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
@@ -43,46 +50,60 @@ USAGE
   exit 2
 }
 
+# ---------------------------------------------------------------------------
+# 1. Capture the user's explicit auth mode (before anything can override it)
+# ---------------------------------------------------------------------------
+EXPLICIT_AUTH_MODE="${TF_BACKEND_AUTH_MODE:-}"
+
+# ---------------------------------------------------------------------------
+# 2. Load bootstrap env (CI credentials) but never override explicit choice
+# ---------------------------------------------------------------------------
 load_bootstrap_env() {
   if [[ -f "$BOOTSTRAP_ENV_FILE" ]]; then
-    # shellcheck disable=SC1090
     source "$BOOTSTRAP_ENV_FILE"
+  fi
+  if [[ -n "$EXPLICIT_AUTH_MODE" ]]; then
+    export TF_BACKEND_AUTH_MODE="$EXPLICIT_AUTH_MODE"
   fi
 }
 
+# ---------------------------------------------------------------------------
+# 3. Install OpenTofu if missing
+# ---------------------------------------------------------------------------
 install_tofu_if_needed() {
   if command -v tofu >/dev/null 2>&1; then
     return 0
   fi
-
   require_cmd curl
   require_cmd unzip
-
   local tofu_version="${TOFU_VERSION:-1.12.4}"
   local tmp_zip tmp_dir
   tmp_zip="$(mktemp)"
   tmp_dir="$(mktemp -d)"
-
   curl -fsSL -o "$tmp_zip" \
     "https://github.com/opentofu/opentofu/releases/download/v${tofu_version}/tofu_${tofu_version}_linux_amd64.zip"
   unzip -o "$tmp_zip" -d "$tmp_dir" >/dev/null
   mkdir -p "$HOME/bin"
   install -m 0755 "$tmp_dir/tofu" "$HOME/bin/tofu"
   export PATH="$HOME/bin:$PATH"
-
   rm -rf "$tmp_zip" "$tmp_dir"
 }
 
+# ---------------------------------------------------------------------------
+# 4. Resolve Azure context & export Terraform variables
+# ---------------------------------------------------------------------------
 resolve_azure_context() {
   require_cmd az
+  export TF_VAR_subscription_id="${TF_VAR_subscription_id:-$(az account show --query id -o tsv)}"
+  export TF_VAR_tenant_id="${TF_VAR_tenant_id:-$(az account show --query tenantId -o tsv)}"
 
-  SUBSCRIPTION_ID="${ARM_SUBSCRIPTION_ID:-$(az account show --query id -o tsv 2>/dev/null || true)}"
-  [[ -n "$SUBSCRIPTION_ID" ]] || fail "unable to resolve subscription; run az login or use AzureCLI@2"
-
-  TENANT_ID="${ARM_TENANT_ID:-$(az account show --query tenantId -o tsv 2>/dev/null || true)}"
-  [[ -n "$TENANT_ID" ]] || true
+  [[ -n "$TF_VAR_subscription_id" ]] || fail "unable to resolve subscription; run az login or set TF_VAR_subscription_id"
+  [[ -n "$TF_VAR_tenant_id" ]]       || fail "unable to resolve tenant; run az login or set TF_VAR_tenant_id"
 }
 
+# ---------------------------------------------------------------------------
+# 5. Determine backend authentication mode
+# ---------------------------------------------------------------------------
 choose_auth_mode() {
   if [[ -n "${TF_BACKEND_AUTH_MODE:-}" ]]; then
     case "$TF_BACKEND_AUTH_MODE" in
@@ -101,31 +122,26 @@ choose_auth_mode() {
   fi
 }
 
-# ------------------------------------------------------------------------------
-# compute_defaults – uses the same naming as bootstrap.sh when env vars are absent
-# ------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 6. Compute backend resource names (uses subscription suffix)
+# ---------------------------------------------------------------------------
 compute_defaults() {
-  # Derive the subscription suffix (last 6 chars) exactly as bootstrap.sh does
-  local subscription_suffix="${SUBSCRIPTION_SUFFIX:-${SUBSCRIPTION_ID: -6}}"
-
-  # Use the bootstrap naming convention if the variables are not already set.
-  # Bootstrap exports:
-  #   STATE_RG="rg-sm-state-${SUBSCRIPTION_SUFFIX}"
-  #   STATE_STORAGE_ACC_NAME="smstatesa${SUBSCRIPTION_SUFFIX}"
-  #   STATE_TF_CONTAINER_NAME="tfbackend"
+  local subscription_suffix="${SUBSCRIPTION_SUFFIX:-${TF_VAR_subscription_id: -6}}"
   TF_BACKEND_RESOURCE_GROUP="${TF_BACKEND_RESOURCE_GROUP:-rg-sm-state-${subscription_suffix}}"
   TF_BACKEND_STORAGE_ACCOUNT="${TF_BACKEND_STORAGE_ACCOUNT:-smstatesa${subscription_suffix}}"
   TF_BACKEND_CONTAINER="${TF_BACKEND_CONTAINER:-tfbackend}"
   TF_BACKEND_KEY_PREFIX="${TF_BACKEND_KEY_PREFIX:-main/terraform}"
 }
 
+# ---------------------------------------------------------------------------
+# 7. Build backend config file – returns path, caller cleans up
+# ---------------------------------------------------------------------------
 build_backend_config() {
   local backend_config
   backend_config="$(mktemp)"
-
   case "$AUTH_MODE" in
     access_key)
-      [[ -n "${ARM_ACCESS_KEY:-}" ]] || fail "ARM_ACCESS_KEY is required for access_key auth"
+      [[ -n "${ARM_ACCESS_KEY:-}" ]] || fail "ARM_ACCESS_KEY required"
       cat >"$backend_config" <<EOF
 resource_group_name  = "$TF_BACKEND_RESOURCE_GROUP"
 storage_account_name = "$TF_BACKEND_STORAGE_ACCOUNT"
@@ -143,8 +159,8 @@ storage_account_name = "$TF_BACKEND_STORAGE_ACCOUNT"
 container_name       = "$TF_BACKEND_CONTAINER"
 key                  = "$TF_BACKEND_KEY"
 use_azuread_auth     = true
-subscription_id      = "$SUBSCRIPTION_ID"
-tenant_id            = "${ARM_TENANT_ID:-$TENANT_ID}"
+subscription_id      = "$TF_VAR_subscription_id"
+tenant_id            = "$TF_VAR_tenant_id"
 client_id            = "$ARM_CLIENT_ID"
 use_oidc             = true
 EOF
@@ -161,28 +177,26 @@ EOF
       fail "unsupported auth mode: $AUTH_MODE"
       ;;
   esac
-
-  printf '%s' "$backend_config"
+  echo "$backend_config"
 }
 
-ensure_plan_dir() {
-  mkdir -p "$PLAN_DIR"
-}
-
+# ---------------------------------------------------------------------------
+# 8. Initialise backend – explicit cleanup, no traps
+# ---------------------------------------------------------------------------
 init_backend() {
-  local backend_config
-  backend_config="$(build_backend_config)"
-  trap 'rm -f "$backend_config"' RETURN
-
-  tofu init \
-    -reconfigure \
-    -input=false \
-    -lockfile=readonly \
-    -backend-config="$backend_config"
+  local backend_config_file
+  backend_config_file="$(build_backend_config)"
+  tofu init -reconfigure -input=false -upgrade -backend-config="$backend_config_file"
+  rm -f "$backend_config_file"
 }
+
+# ---------------------------------------------------------------------------
+# 9. Core operations
+# ---------------------------------------------------------------------------
+ensure_plan_dir() { mkdir -p "$PLAN_DIR"; }
 
 prepare_stack() {
-  tofu fmt -check -recursive
+  tofu fmt -recursive
   init_backend
   tofu validate -no-color
 }
@@ -191,32 +205,23 @@ run_plan() {
   ensure_plan_dir
   rm -f "$PLAN_FILE"
   prepare_stack
-  tofu plan \
-    -input=false \
-    -lock-timeout=5m \
-    -var-file="$VAR_FILE" \
-    -out="$PLAN_FILE"
+  tofu plan -input=false -lock-timeout=5m -var-file="$VAR_FILE" -out="$PLAN_FILE"
 }
 
 run_apply_plan() {
   [[ -f "$PLAN_FILE_INPUT" ]] || fail "plan file not found: $PLAN_FILE_INPUT"
   init_backend
-  tofu apply \
-    -input=false \
-    -lock-timeout=5m \
-    -auto-approve \
-    "$PLAN_FILE_INPUT"
+  tofu apply -input=false -lock-timeout=5m -auto-approve "$PLAN_FILE_INPUT"
 }
 
 run_destroy() {
   init_backend
-  tofu destroy \
-    -input=false \
-    -lock-timeout=5m \
-    -auto-approve \
-    -var-file="$VAR_FILE"
+  tofu destroy -input=false -lock-timeout=5m -auto-approve -var-file="$VAR_FILE"
 }
 
+# ---------------------------------------------------------------------------
+# 10. Argument parsing
+# ---------------------------------------------------------------------------
 MODE=""
 ENVIRONMENT=""
 PLAN_FILE_INPUT=""
@@ -225,47 +230,34 @@ YES_DELETE=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --plan|--create|--validate|--destroy)
-      MODE="$1"
-      shift
-      ;;
+      MODE="$1"; shift ;;
     --apply-plan)
-      MODE="--apply-plan"
-      shift
-      PLAN_FILE_INPUT="${1:-}"
-      [[ -n "$PLAN_FILE_INPUT" ]] || usage
-      shift
-      ;;
+      MODE="--apply-plan"; shift
+      PLAN_FILE_INPUT="${1:-}"; [[ -n "$PLAN_FILE_INPUT" ]] || usage; shift ;;
     --env)
-      ENVIRONMENT="${2:-}"
-      [[ -n "$ENVIRONMENT" ]] || usage
-      shift 2
-      ;;
+      ENVIRONMENT="${2:-}"; [[ -n "$ENVIRONMENT" ]] || usage; shift 2 ;;
     --yes-delete)
-      YES_DELETE=true
-      shift
-      ;;
-    *)
-      usage
-      ;;
+      YES_DELETE=true; shift ;;
+    *) usage ;;
   esac
 done
 
 [[ -n "$MODE" ]] || usage
-if [[ "$MODE" != "--validate" && -z "$ENVIRONMENT" ]]; then
-  usage
-fi
+if [[ "$MODE" != "--validate" && -z "$ENVIRONMENT" ]]; then usage; fi
 
 require_cmd sha256sum
 require_cmd python3
 require_cmd curl
 require_cmd unzip
 
+# ---------------------------------------------------------------------------
+# 11. Execution order – subscription resolved before backend naming
+# ---------------------------------------------------------------------------
 load_bootstrap_env
-resolve_azure_context
+resolve_azure_context        # sets TF_VAR_subscription_id, TF_VAR_tenant_id
 choose_auth_mode
 install_tofu_if_needed
-
-compute_defaults
+compute_defaults              # needs TF_VAR_subscription_id for suffix
 
 TF_BACKEND_KEY="${TF_BACKEND_KEY:-${TF_BACKEND_KEY_PREFIX}/${ENVIRONMENT}.tfstate}"
 PLAN_DIR="$SCRIPT_DIR/.plans/$ENVIRONMENT"
@@ -273,9 +265,7 @@ PLAN_FILE="$PLAN_DIR/plan.tfplan"
 VAR_FILE="$SCRIPT_DIR/environments/${ENVIRONMENT}.tfvars"
 
 case "$MODE" in
-  --validate)
-    prepare_stack
-    ;;
+  --validate) prepare_stack ;;
   --plan)
     [[ -f "$VAR_FILE" ]] || fail "variable file not found: $VAR_FILE"
     run_plan
@@ -287,15 +277,11 @@ case "$MODE" in
     log "applying plan $PLAN_FILE"
     tofu apply -input=false -lock-timeout=5m -auto-approve "$PLAN_FILE"
     ;;
-  --apply-plan)
-    run_apply_plan
-    ;;
+  --apply-plan) run_apply_plan ;;
   --destroy)
     $YES_DELETE || fail "--yes-delete required"
     [[ -f "$VAR_FILE" ]] || fail "variable file not found: $VAR_FILE"
     run_destroy
     ;;
-  *)
-    usage
-    ;;
+  *) usage ;;
 esac

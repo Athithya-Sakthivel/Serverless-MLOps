@@ -1,62 +1,47 @@
-# ------------------------------------------------------------------------------
-# Core – used by the state module and resource group
-# ------------------------------------------------------------------------------
-variable "resource_group_name" {
-  description = "Name of the resource group for main infrastructure"
+variable "subscription_id" {
+  description = "Azure subscription ID."
+  type        = string
+}
+
+variable "tenant_id" {
+  description = "Azure tenant ID."
   type        = string
 }
 
 variable "location" {
-  description = "Azure region"
+  description = "Azure region for application resources."
   type        = string
-  default     = "centralindia"
+}
+
+variable "environment" {
+  description = "Environment name, e.g. staging or prod."
+  type        = string
+
+  validation {
+    condition     = contains(["staging", "prod"], var.environment)
+    error_message = "environment must be one of: staging, prod."
+  }
 }
 
 variable "tags" {
-  description = "Tags to apply to all resources"
+  description = "Common tags applied to all resources."
   type        = map(string)
   default     = {}
 }
 
-# ------------------------------------------------------------------------------
-# Cosmos DB
-# ------------------------------------------------------------------------------
-variable "cosmosdb_account_name" {
-  description = "Globally unique Cosmos DB account name"
-  type        = string
+variable "storage_container_names" {
+  description = "Blob containers to create in ADLS Gen2."
+  type        = list(string)
+  default     = ["raw", "clean", "models", "logs"]
 }
 
-variable "cosmosdb_offer_type" {
-  description = "Offer type: 'Serverless' or 'Standard'"
-  type        = string
-  default     = "Serverless"
-}
-
-variable "cosmosdb_enable_free_tier" {
-  description = "Enable free tier discount"
+variable "shared_access_key_enabled" {
+  description = "Enable shared access key authentication. Set false after initial apply."
   type        = bool
-  default     = false
+  default     = true
 }
 
-variable "cosmosdb_throughput" {
-  description = "Provisioned throughput (RU/s) per container (if Standard)"
-  type        = number
-  default     = 400
-}
-
-# Optional – if you want to use autoscale, you can add:
-# variable "cosmosdb_autoscale_max_throughput" { ... }
-
-# ------------------------------------------------------------------------------
-# ACR
-# ------------------------------------------------------------------------------
-variable "acr_name" {
-  description = "Globally unique Azure Container Registry name"
+variable "alert_email_address" {
+  description = "Email address used by the monitoring action group."
   type        = string
-}
-
-variable "acr_sku" {
-  description = "SKU for ACR: Basic, Standard, or Premium"
-  type        = string
-  default     = "Basic"
 }

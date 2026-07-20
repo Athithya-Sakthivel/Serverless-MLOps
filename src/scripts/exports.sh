@@ -22,3 +22,11 @@ export CLEAN_CONTAINER_NAME="clean"
 export TRAINING_QUEUE_NAME="training-trigger"
 export TRIGGER_ML_TRAINING="false"
 
+
+
+export ARM_USE_OIDC=false
+export ARM_USE_AZUREAD=false
+export ARM_TENANT_ID=$(az account show --query tenantId -o tsv)
+export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+unset ARM_OIDC_TOKEN ARM_CLIENT_ID ARM_ACCESS_KEY
+export TF_BACKEND_AUTH_MODE=cli

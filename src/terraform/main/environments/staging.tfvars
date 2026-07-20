@@ -1,19 +1,14 @@
-# ------------------------------------------------------------------------------
-# staging.tfvars – only the variables needed for the state module
-# ------------------------------------------------------------------------------
+location    = "centralindia"
+environment = "staging"
 
-resource_group_name = "rg-agentic-sre-staging"
-location            = "centralindia"
+storage_container_names = ["raw", "clean", "models", "logs"]
+
+shared_access_key_enabled = true
+alert_email_address       = "alerts@example.com"
 
 tags = {
-  environment = "staging"
-  project     = "agentic-sre"
+  app     = "serverless-mlops"
+  owner   = "athithya"
+  env     = "staging"
+  project = "serverless-mlops"
 }
-
-cosmosdb_account_name     = "cosmos-agentic-staging"
-cosmosdb_offer_type       = "Serverless" # This now works via capabilities
-cosmosdb_enable_free_tier = true
-cosmosdb_throughput       = 400
-
-acr_name = "acragenticstaging"
-acr_sku  = "Basic"

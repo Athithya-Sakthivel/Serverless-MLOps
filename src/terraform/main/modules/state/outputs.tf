@@ -1,52 +1,31 @@
-# ------------------------------------------------------------------------------
-# Cosmos DB outputs
-# ------------------------------------------------------------------------------
-output "cosmosdb_account_id" {
-  description = "Resource ID of the Cosmos DB account."
-  value       = azurerm_cosmosdb_account.main.id
+output "resource_group_name" {
+  value = azurerm_resource_group.this.name
 }
 
-output "cosmosdb_account_endpoint" {
-  description = "Cosmos DB account endpoint (URI)."
-  value       = azurerm_cosmosdb_account.main.endpoint
+output "resource_group_id" {
+  value = azurerm_resource_group.this.id
 }
 
-output "cosmosdb_primary_key" {
-  description = "Primary read‑write key for the Cosmos DB account."
-  value       = azurerm_cosmosdb_account.main.primary_key
-  sensitive   = true
+output "storage_account_name" {
+  value = azurerm_storage_account.this.name
 }
 
-output "cosmosdb_primary_connection_string" {
-  description = "Primary connection string for Cosmos DB (AccountEndpoint + AccountKey)."
-  value       = "AccountEndpoint=${azurerm_cosmosdb_account.main.endpoint};AccountKey=${azurerm_cosmosdb_account.main.primary_key};"
-  sensitive   = true
+output "storage_account_id" {
+  value = azurerm_storage_account.this.id
 }
 
-output "database_name" {
-  description = "Name of the SQL database."
-  value       = azurerm_cosmosdb_sql_database.main.name
+output "storage_account_blob_endpoint" {
+  value = azurerm_storage_account.this.primary_blob_endpoint
 }
 
-output "checkpoint_container_name" {
-  description = "Name of the checkpoints container."
-  value       = azurerm_cosmosdb_sql_container.checkpoints.name
+output "acr_name" {
+  value = azurerm_container_registry.this.name
 }
 
-output "rate_limit_container_name" {
-  description = "Name of the rate‑limits container."
-  value       = azurerm_cosmosdb_sql_container.rate_limits.name
-}
-
-# ------------------------------------------------------------------------------
-# ACR outputs
-# ------------------------------------------------------------------------------
 output "acr_id" {
-  description = "Resource ID of the Azure Container Registry."
-  value       = azurerm_container_registry.main.id
+  value = azurerm_container_registry.this.id
 }
 
 output "acr_login_server" {
-  description = "Login server (hostname) for the ACR (e.g., myacr.azurecr.io)."
-  value       = azurerm_container_registry.main.login_server
+  value = azurerm_container_registry.this.login_server
 }
