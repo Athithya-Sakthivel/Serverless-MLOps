@@ -12,7 +12,6 @@
    *   **Azure Monitor** (Application Insights & Log Analytics Workspace)
    *   **Azure Storage Account** (Terraform State Backend + ACR)
    *   **Azure Container Registry (ACR)** (Private Endpoints)
-   *   **Cosmos DB** (Serverless, Private Endpoints)
    *   **Key Vault** (Secrets Management)
    *   **Azure Functions** (HTTP-triggered serverless compute)
    *   **Identity & Access** (Microsoft Entra ID, SAMI, Workload Identity Federation, RBAC)
