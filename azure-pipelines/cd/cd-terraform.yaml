@@ -13,7 +13,7 @@ pool:
 jobs:
   - deployment: apply_terraform
     displayName: 'Plan and apply Terraform'
-    environment: production
+    environment: staging
     strategy:
       runOnce:
         deploy:
@@ -35,7 +35,6 @@ jobs:
                   cd "$(Build.SourcesDirectory)/src/terraform/main"
                   chmod +x ./run.sh
 
-                  # Pass the CD service principal identity to run.sh
                   export ARM_CLIENT_ID="${servicePrincipalId}"
                   export ARM_TENANT_ID="${tenantId}"
                   export ARM_OIDC_TOKEN="${idToken}"
@@ -43,7 +42,4 @@ jobs:
                   export ARM_USE_OIDC="true"
                   export TF_IN_AUTOMATION="true"
 
-                  # run.sh will auto-detect OIDC auth and use the same
-                  # backend resources as bootstrap.sh created.
-                  ./run.sh --plan --env prod
-                  ./run.sh --apply-plan .plans/prod/plan.tfplan --env prod
+                  ./run.sh --create --env staging
