@@ -50,12 +50,27 @@ steps:
         -r "$(Build.SourcesDirectory)/${{ parameters.requirementsFile }}" \
         -r "$(Build.SourcesDirectory)/${{ parameters.devRequirementsFile }}"
       python -m pip check
-      ruff check "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
-      ruff format --check "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
-      mypy "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
-    displayName: 'Lint, type-check and install dependencies'
+    displayName: 'Install dependencies'
     env:
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
+
+  - bash: |
+      set -euo pipefail
+      source .venv/bin/activate
+      ruff check "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
+    displayName: 'Ruff lint'
+
+  - bash: |
+      set -euo pipefail
+      source .venv/bin/activate
+      ruff format --check "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
+    displayName: 'Ruff format check'
+
+  - bash: |
+      set -euo pipefail
+      source .venv/bin/activate
+      basedpyright "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
+    displayName: 'basedpyright type-check'
 
   - ${{ each step in parameters.preTestSteps }}:
     - ${{ step }}
@@ -80,7 +95,6 @@ steps:
       set -euo pipefail
       source .venv/bin/activate
       mkdir -p "$(Build.ArtifactStagingDirectory)/security"
-      python -m pip install pip-audit
       pip-audit -f json -o "$(Build.ArtifactStagingDirectory)/security/pip-audit.json"
     displayName: 'Dependency vulnerability audit'
 

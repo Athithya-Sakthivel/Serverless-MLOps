@@ -3,10 +3,13 @@ trigger:
   branches:
     include:
       - main
-      - feat/*
   paths:
     include:
-      - src/workloads/elt/**
+      - src/workloads/training_pipeline/elt/**
+      - src/workloads/training_pipeline/utils/**
+      - src/workloads/training_pipeline/main.py
+      - src/workloads/training_pipeline/tests/test_elt.py
+      - src/workloads/training_pipeline/requirements-ci.txt
       - azure-pipelines/ci/ci-elt.yaml
       - azure-pipelines/templates/python-ci.yaml
 
@@ -24,8 +27,8 @@ variables:
 steps:
   - template: azure-pipelines/templates/python-ci.yaml
     parameters:
-      serviceDirectory: 'src/workloads/elt'
-      pythonVersion: '3.11'
-      requirementsFile: 'src/workloads/elt/requirements-ci.txt'
-      devRequirementsFile: 'src/workloads/elt/requirements-ci.txt'   # same file for dev
+      serviceDirectory: 'src/workloads/training_pipeline'
+      pythonVersion: '3.14'
+      requirementsFile: 'src/workloads/training_pipeline/requirements-ci.txt'
+      devRequirementsFile: 'src/workloads/training_pipeline/requirements-ci.txt'
       includeDocker: false

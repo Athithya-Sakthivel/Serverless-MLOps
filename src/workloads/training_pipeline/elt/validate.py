@@ -25,35 +25,16 @@ REQUIRED_COLUMNS: tuple[str, ...] = (
     "YEAR",
     "PINCP",
 )
-
 OPTIONAL_COLUMNS: tuple[str, ...] = ("__index_level_0__",)
-
-NUMERIC_COLUMNS: tuple[str, ...] = (
-    "AGEP",
-    "COW",
-    "SCHL",
-    "MAR",
-    "OCCP",
-    "POBP",
-    "RELP",
-    "WKHP",
-    "SEX",
-    "RAC1P",
-    "YEAR",
-    "PINCP",
-)
-
 STATE_PATTERN = re.compile(r"^[A-Z]{2}$")
 
 
 class ValidationError(ValueError):
-    """Raised when the raw dataset is not acceptable for downstream processing."""
+    """Raised when the raw dataset fails a hard validation rule."""
 
 
 @dataclass(frozen=True, slots=True)
 class ValidationConfig:
-    """Validation thresholds for the fixed ACS dataset."""
-
     max_null_rate_by_column: dict[str, float] = field(
         default_factory=lambda: {
             "AGEP": 0.005,
@@ -84,8 +65,6 @@ class ValidationConfig:
 
 @dataclass(frozen=True, slots=True)
 class ValidationReport:
-    """Structured validation summary that can be written to checkpoints."""
-
     row_count: int
     column_names: tuple[str, ...]
     duplicate_rows: int
@@ -95,15 +74,11 @@ class ValidationReport:
 
     @property
     def duplicate_rate(self) -> float:
-        if self.row_count == 0:
-            return 0.0
-        return self.duplicate_rows / self.row_count
+        return self.duplicate_rows / self.row_count if self.row_count else 0.0
 
     @property
     def invalid_state_rate(self) -> float:
-        if self.row_count == 0:
-            return 0.0
-        return self.invalid_state_rows / self.row_count
+        return self.invalid_state_rows / self.row_count if self.row_count else 0.0
 
 
 def _dtype_name(dtype: pl.DataType) -> str:
@@ -119,53 +94,45 @@ def validate_raw_frame(
     frame: pl.DataFrame,
     config: ValidationConfig | None = None,
 ) -> ValidationReport:
-    """Validate the raw frame and raise on hard failures."""
-
-    config = config or ValidationConfig()
+    if config is None:
+        config = ValidationConfig()
 
     if frame.height < config.min_rows:
         raise ValidationError("Raw frame is empty")
 
-    missing_columns = [name for name in REQUIRED_COLUMNS if name not in frame.columns]
-    if missing_columns:
-        raise ValidationError("Missing required columns: " + ", ".join(sorted(missing_columns)))
+    missing = sorted(c for c in REQUIRED_COLUMNS if c not in frame.columns)
+    if missing:
+        raise ValidationError("Missing required columns: " + ", ".join(missing))
 
-    extra_columns = [
-        name
-        for name in frame.columns
-        if name not in REQUIRED_COLUMNS and name not in OPTIONAL_COLUMNS
-    ]
-    if extra_columns:
-        LOG.warning("Unexpected extra columns present: %s", ", ".join(extra_columns))
+    extra = [c for c in frame.columns if c not in REQUIRED_COLUMNS and c not in OPTIONAL_COLUMNS]
+    if extra:
+        LOG.warning("Unexpected extra columns present: %s", ", ".join(extra))
 
-    invalid_type_columns: list[str] = []
     schema = frame.schema
-    for column_name in REQUIRED_COLUMNS:
-        dtype = schema[column_name]
-        if column_name == "STATE":
+    bad_types: list[str] = []
+    for col in REQUIRED_COLUMNS:
+        dtype = schema[col]
+        if col == "STATE":
             if _dtype_name(dtype) != "String":
-                invalid_type_columns.append(f"{column_name}={dtype}")
-            continue
-        if not _is_numeric_dtype(dtype):
-            invalid_type_columns.append(f"{column_name}={dtype}")
+                bad_types.append(f"{col}={dtype}")
+        elif not _is_numeric_dtype(dtype):
+            bad_types.append(f"{col}={dtype}")
+    if bad_types:
+        raise ValidationError("Unexpected column types: " + ", ".join(bad_types))
 
-    if invalid_type_columns:
-        raise ValidationError("Unexpected column types: " + ", ".join(invalid_type_columns))
-
-    null_counts: dict[str, int] = {
-        column_name: int(frame.select(pl.col(column_name).null_count()).item())
-        for column_name in REQUIRED_COLUMNS
-    }
+    # Single-pass null counts
+    null_counts_series = frame.select(pl.all().null_count()).row(0, named=True)
+    null_counts = {col: int(null_counts_series[col]) for col in REQUIRED_COLUMNS}
     warnings: list[str] = []
 
-    for column_name, max_null_rate in config.max_null_rate_by_column.items():
-        null_rate = null_counts[column_name] / frame.height
+    for col, max_null_rate in config.max_null_rate_by_column.items():
+        null_rate = null_counts[col] / frame.height
         if null_rate > max_null_rate:
             raise ValidationError(
-                f"Null rate for {column_name} is {null_rate:.4%}, above allowed {max_null_rate:.4%}"
+                f"Null rate for {col} is {null_rate:.4%}, above allowed {max_null_rate:.4%}"
             )
         if null_rate > 0:
-            warnings.append(f"{column_name} null_rate={null_rate:.4%}")
+            warnings.append(f"{col} null_rate={null_rate:.4%}")
 
     duplicate_rows = frame.height - frame.unique(maintain_order=True).height
     if duplicate_rows / frame.height > config.max_duplicate_rate:
@@ -189,26 +156,26 @@ def validate_raw_frame(
     if invalid_state_rows > 0:
         warnings.append(f"invalid_state_rows={invalid_state_rows}")
 
-    bad_year_rows = frame.filter(
+    bad_year = frame.filter(
         (pl.col("YEAR").cast(pl.Int64, strict=False) < config.min_year)
         | (pl.col("YEAR").cast(pl.Int64, strict=False) > config.max_year)
     ).height
-    if bad_year_rows > 0:
-        warnings.append(f"year_out_of_range_rows={bad_year_rows}")
+    if bad_year:
+        warnings.append(f"year_out_of_range_rows={bad_year}")
 
-    bad_age_rows = frame.filter(
+    bad_age = frame.filter(
         (pl.col("AGEP").cast(pl.Float64, strict=False) < config.min_age)
         | (pl.col("AGEP").cast(pl.Float64, strict=False) > config.max_age)
     ).height
-    if bad_age_rows > 0:
-        warnings.append(f"age_out_of_range_rows={bad_age_rows}")
+    if bad_age:
+        warnings.append(f"age_out_of_range_rows={bad_age}")
 
-    bad_hours_rows = frame.filter(
+    bad_hours = frame.filter(
         (pl.col("WKHP").cast(pl.Float64, strict=False) < config.min_work_hours)
         | (pl.col("WKHP").cast(pl.Float64, strict=False) > config.max_work_hours)
     ).height
-    if bad_hours_rows > 0:
-        warnings.append(f"work_hours_out_of_range_rows={bad_hours_rows}")
+    if bad_hours:
+        warnings.append(f"work_hours_out_of_range_rows={bad_hours}")
 
     report = ValidationReport(
         row_count=frame.height,
@@ -220,12 +187,11 @@ def validate_raw_frame(
     )
 
     LOG.info(
-        "Validation passed for %d rows (%d duplicates, %d invalid states)",
+        "Validation passed: %d rows, %d duplicates, %d invalid states",
         report.row_count,
         report.duplicate_rows,
         report.invalid_state_rows,
     )
     for warning in report.warnings:
         LOG.warning("Validation warning: %s", warning)
-
     return report

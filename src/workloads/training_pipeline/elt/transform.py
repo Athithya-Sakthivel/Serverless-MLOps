@@ -1,4 +1,4 @@
-"""Clean and standardize the fixed ACS dataset."""
+"""Clean and standardize the ACS dataset."""
 
 from __future__ import annotations
 
@@ -16,8 +16,6 @@ OUTPUT_COLUMNS: tuple[str, ...] = REQUIRED_COLUMNS
 
 @dataclass(frozen=True, slots=True)
 class TransformMetrics:
-    """Metrics that are suitable for checkpoint payloads."""
-
     input_rows: int
     output_rows: int
     duplicates_removed: int
@@ -67,8 +65,6 @@ def clean_raw_frame(
     frame: pl.DataFrame,
     validation_report: ValidationReport | None = None,
 ) -> tuple[pl.DataFrame, TransformMetrics]:
-    """Produce a canonical clean frame suitable for downstream training."""
-
     input_rows = frame.height
     working = frame.clone()
 
@@ -105,7 +101,6 @@ def clean_raw_frame(
     duplicates_removed = before_dedup - working.height
 
     working = working.select([name for name in OUTPUT_COLUMNS if name in working.columns])
-
     working = working.with_columns(
         pl.col("AGEP").cast(pl.Float64),
         pl.col("COW").cast(pl.Float64),
@@ -130,11 +125,11 @@ def clean_raw_frame(
         invalid_age_rows_removed=invalid_age_rows_removed,
         invalid_hours_rows_removed=invalid_hours_rows_removed,
         invalid_year_rows_removed=invalid_year_rows_removed,
-        warnings=validation_report.warnings if validation_report is not None else (),
+        warnings=validation_report.warnings if validation_report else (),
     )
 
     LOG.info(
-        "Transform complete: %d -> %d rows (%d removed, %d duplicates removed)",
+        "Transform complete: %d -> %d rows (%d removed, %d duplicates)",
         metrics.input_rows,
         metrics.output_rows,
         metrics.rows_removed,

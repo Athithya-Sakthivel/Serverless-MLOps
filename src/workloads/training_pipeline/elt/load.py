@@ -1,124 +1,80 @@
-"""Load clean parquet data and write ELT checkpoints to Azure Blob Storage."""
+"""Write clean parquet and manage ELT checkpoints."""
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import tempfile
-from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import polars as pl
-from azure.core.exceptions import (
-    ClientAuthenticationError,
-    HttpResponseError,
-    ResourceExistsError,
-    ResourceNotFoundError,
+from azure.core.exceptions import ResourceNotFoundError
+from utils.storage import (
+    JSON_CONTENT_TYPE,
+    PARQUET_CONTENT_TYPE,
+    build_blob_service_client,
+    ensure_container,
+    upload_bytes_to_blob,
+    upload_file_to_blob,
 )
-from azure.identity import DefaultAzureCredential
-from azure.storage.blob import BlobServiceClient, ContentSettings
-
-from .transform import TransformMetrics
 
 LOG = logging.getLogger(__name__)
-PARQUET_CONTENT_TYPE = "application/vnd.apache.parquet"
-JSON_CONTENT_TYPE = "application/json"
-DEFAULT_CLEAN_CONTAINER = "clean"
-DEFAULT_CHECKPOINT_CONTAINER = "checkpoints"
 
-
-@dataclass(frozen=True, slots=True)
-class LoadConfig:
-    """Configuration for writing clean output and checkpoints."""
-
-    storage_account_name: str
-    clean_container_name: str = DEFAULT_CLEAN_CONTAINER
-    checkpoint_container_name: str = DEFAULT_CHECKPOINT_CONTAINER
-
-    @property
-    def account_url(self) -> str:
-        return f"https://{self.storage_account_name}.blob.core.windows.net"
-
-
-def build_blob_service_client(storage_account_name: str) -> BlobServiceClient:
-    """Build a BlobServiceClient using DefaultAzureCredential."""
-    if not storage_account_name:
-        raise ValueError("storage_account_name is required")
-
-    credential = DefaultAzureCredential(exclude_interactive_browser_credential=True)
-    return BlobServiceClient(
-        account_url=f"https://{storage_account_name}.blob.core.windows.net",
-        credential=credential,
-    )
-
-
-def _ensure_container(container_client) -> None:
-    """Create a container only if it does not already exist."""
-    try:
-        container_client.create_container()
-        LOG.info("Created container: %s", container_client.container_name)
-    except ResourceExistsError:
-        LOG.info("Container already exists: %s", container_client.container_name)
+STATUS_RUNNING = "RUNNING"
+STATUS_COMPLETED = "COMPLETED"
+STATUS_FAILED = "FAILED"
 
 
 def clean_blob_name(raw_blob_name: str) -> str:
-    """Mirror the input blob path in the clean container."""
-    blob_name = raw_blob_name.strip().lstrip("/")
-    if not blob_name:
+    raw_blob_name = raw_blob_name.strip().lstrip("/")
+    if not raw_blob_name:
         raise ValueError("raw_blob_name is required")
-    return blob_name
+    parts = raw_blob_name.split("/", 1)
+    if len(parts) == 2:
+        return f"clean/{parts[1]}"
+    return f"clean/{raw_blob_name}"
 
 
-def checkpoint_blob_name(raw_blob_name: str) -> str:
-    """Derive a deterministic checkpoint object name from the raw blob path."""
-    blob_name = clean_blob_name(raw_blob_name)
-    if blob_name.endswith(".parquet"):
-        blob_name = blob_name[: -len(".parquet")]
-    return f"elt/{blob_name}.json"
-
-
-def checkpoint_payload(
-    *,
-    raw_blob_name: str,
-    clean_blob_name: str,
-    validation_report: dict[str, Any],
-    transform_metrics: TransformMetrics,
-    started_at: datetime,
-    finished_at: datetime,
-    status: str = "completed",
-) -> dict[str, Any]:
-    """Build the JSON payload written after a successful ELT run."""
-    return {
-        "status": status,
-        "raw_blob_name": raw_blob_name,
-        "clean_blob_name": clean_blob_name,
-        "started_at": started_at.astimezone(UTC).isoformat(),
-        "finished_at": finished_at.astimezone(UTC).isoformat(),
-        "duration_seconds": round((finished_at - started_at).total_seconds(), 3),
-        "validation": validation_report,
-        "transform": asdict(transform_metrics),
-    }
-
-
-def checkpoint_exists(
+def read_checkpoint(
     *,
     storage_account_name: str,
     checkpoint_container_name: str,
     raw_blob_name: str,
-) -> bool:
-    """Return True when a completed checkpoint already exists."""
+) -> dict[str, Any] | None:
     service_client = build_blob_service_client(storage_account_name)
     blob_client = service_client.get_blob_client(
         container=checkpoint_container_name,
-        blob=checkpoint_blob_name(raw_blob_name),
+        blob=f"elt/{raw_blob_name.lstrip('/')}.json",
     )
-
     try:
-        return blob_client.exists()
-    except HttpResponseError:
-        return False
+        downloader = blob_client.download_blob()
+        return json.loads(downloader.readall().decode("utf-8"))
+    except ResourceNotFoundError:
+        return None
+
+
+def write_checkpoint(
+    *,
+    storage_account_name: str,
+    checkpoint_container_name: str,
+    raw_blob_name: str,
+    payload: dict[str, Any],
+) -> None:
+    service_client = build_blob_service_client(storage_account_name)
+    ensure_container(service_client, checkpoint_container_name)
+    blob_name = f"elt/{raw_blob_name.lstrip('/')}.json"
+    upload_bytes_to_blob(
+        service_client,
+        container_name=checkpoint_container_name,
+        blob_name=blob_name,
+        data=json.dumps(payload, indent=2, sort_keys=True).encode("utf-8"),
+        content_type=JSON_CONTENT_TYPE,
+        overwrite=True,
+    )
+    LOG.info("ELT checkpoint written: %s", blob_name)
 
 
 def write_clean_frame(
@@ -128,87 +84,45 @@ def write_clean_frame(
     clean_container_name: str,
     clean_blob_name_value: str,
 ) -> None:
-    """Upload the clean parquet to Azure Blob Storage."""
     if frame.height == 0:
-        raise ValueError("Refusing to upload an empty clean frame")
+        raise ValueError("Refusing to write an empty clean frame")
 
     service_client = build_blob_service_client(storage_account_name)
-    container_client = service_client.get_container_client(clean_container_name)
-    _ensure_container(container_client)
-
-    temp_handle = tempfile.NamedTemporaryFile(suffix=".parquet", delete=False)
-    temp_path = Path(temp_handle.name)
-    temp_handle.close()
-
+    fd, tmp_path_str = tempfile.mkstemp(suffix=".parquet")
+    os.close(fd)
+    tmp_path = Path(tmp_path_str)
     try:
-        frame.write_parquet(temp_path, compression="zstd")
-        with temp_path.open("rb") as handle:
-            container_client.upload_blob(
-                name=clean_blob_name_value,
-                data=handle,
-                overwrite=True,
-                content_settings=ContentSettings(content_type=PARQUET_CONTENT_TYPE),
-            )
-    except ClientAuthenticationError as exc:
-        raise RuntimeError("Azure authentication failed while writing the clean blob") from exc
-    except HttpResponseError as exc:
-        error_code = str(getattr(exc, "error_code", "") or "")
-        message = str(exc)
-        if (
-            "AuthorizationPermissionMismatch" in error_code
-            or "AuthorizationPermissionMismatch" in message
-        ):
-            raise RuntimeError(
-                "Upload was authenticated but not authorized. "
-                "Assign Storage Blob Data Contributor on the clean container or account."
-            ) from exc
-        raise
+        frame.write_parquet(tmp_path)
+        upload_file_to_blob(
+            service_client,
+            container_name=clean_container_name,
+            blob_name=clean_blob_name_value,
+            file_path=tmp_path,
+            content_type=PARQUET_CONTENT_TYPE,
+            overwrite=True,
+        )
     finally:
-        temp_path.unlink(missing_ok=True)
+        tmp_path.unlink(missing_ok=True)
+    LOG.info("Clean frame written: %s (%d rows)", clean_blob_name_value, frame.height)
 
-    LOG.info("Uploaded clean parquet to %s/%s", clean_container_name, clean_blob_name_value)
 
-
-def write_checkpoint(
+def checkpoint_payload(
     *,
-    storage_account_name: str,
-    checkpoint_container_name: str,
     raw_blob_name: str,
-    payload: dict[str, Any],
-) -> str:
-    """Write a deterministic checkpoint JSON and return its blob name."""
-    service_client = build_blob_service_client(storage_account_name)
-    container_client = service_client.get_container_client(checkpoint_container_name)
-    _ensure_container(container_client)
-
-    blob_name = checkpoint_blob_name(raw_blob_name)
-    body = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
-    container_client.upload_blob(
-        name=blob_name,
-        data=body,
-        overwrite=True,
-        content_settings=ContentSettings(content_type=JSON_CONTENT_TYPE),
-    )
-    LOG.info("Wrote checkpoint to %s/%s", checkpoint_container_name, blob_name)
-    return blob_name
-
-
-def read_checkpoint(
-    *,
-    storage_account_name: str,
-    checkpoint_container_name: str,
-    raw_blob_name: str,
-) -> dict[str, Any] | None:
-    """Read a checkpoint if it exists."""
-    service_client = build_blob_service_client(storage_account_name)
-    blob_client = service_client.get_blob_client(
-        container=checkpoint_container_name,
-        blob=checkpoint_blob_name(raw_blob_name),
-    )
-    try:
-        downloader = blob_client.download_blob()
-        return json.loads(downloader.readall().decode("utf-8"))
-    except ResourceNotFoundError:
-        return None
-    except ClientAuthenticationError as exc:
-        raise RuntimeError("Azure authentication failed while reading the checkpoint") from exc
+    clean_blob_name: str,
+    validation_report: dict[str, Any],
+    transform_metrics: dict[str, Any],
+    started_at: datetime,
+    finished_at: datetime,
+    status: str = STATUS_COMPLETED,
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "raw_blob_name": raw_blob_name,
+        "clean_blob_name": clean_blob_name,
+        "validation_report": validation_report,
+        "transform_metrics": transform_metrics,
+        "started_at": started_at.isoformat(),
+        "finished_at": finished_at.isoformat(),
+        "duration_seconds": (finished_at - started_at).total_seconds(),
+    }
