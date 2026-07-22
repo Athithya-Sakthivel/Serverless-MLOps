@@ -110,11 +110,14 @@ git add . && git commit -m "bootstrap extend" && git push origin main
 
 </details>
 
-# Run main
-export TF_VAR_project_name="${TF_VAR_project_name:-agentic-sre}"
-bash src/terraform/main/run.sh --plan --env staging
+# PHASE 1.3: Deploy Infrastructure to Staging
 
-![alt text](image.png)
+Open `src/terraform/main/environments/staging.tfvars` and overwrite the `alert_email_address` and `tags.owner` fields.
+
+```bash
+git add . && git commit -m "Update main Terraform resources" && git push origin main
+```
+
 
 
 

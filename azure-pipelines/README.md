@@ -1,7 +1,7 @@
 # Azure Pipelines – Serverless MLOps CI/CD
 
 Continuous integration and delivery for the **Serverless‑MLOps** system.  
-Pipelines are organised by workload: data engineering (ELT), model training, infrastructure as code, and deployment.
+Pipelines are organised by code‑change domain within a single training container: data transformation (ELT) and model training. Both run inside the same Azure Container App Job, but CI triggers are split by source path for fast feedback and independent validation.
 
 ---
 
@@ -10,17 +10,17 @@ Pipelines are organised by workload: data engineering (ELT), model training, inf
 ```
 azure-pipelines/
 ├── ci/                          # Continuous integration pipelines
-│   ├── ci-elt.yaml              # ELT function app – lint, test, validate bindings
-│   ├── ci-ml-training.yaml      # Model training – test, train, register in MLflow
+│   ├── ci-elt.yaml              # ELT code – lint, test transform logic
+│   ├── ci-ml-training.yaml      # Training code – lint, test training logic
+│   ├── ci-container.yaml        # Build & push container (triggered on any change)
 │   ├── ci-terraform.yaml        # Infrastructure – fmt, validate, plan
 │   └── full_repo_security_scan.yaml
 ├── cd/                          # Continuous delivery pipelines
-│   ├── cd-deploy.yaml           # Deploy ELT + model serving (parameterised)
+│   ├── cd-deploy.yaml           # Deploy training container (parameterised)
 │   └── cd-terraform.yaml        # Apply infrastructure plan
 ├── templates/                   # Reusable job templates
-│   ├── python-ci.yaml           # Shared Python lint/test steps (optional Docker build)
-│   ├── elt-deploy.yaml          # Deploy Python Azure Function
-│   └── aca-deploy.yaml          # Canary deploy to Azure Container Apps with k6
+│   ├── python-ci.yaml           # Shared Python lint/test steps
+│   └── aca-deploy.yaml          # Deploy to Azure Container Apps Job
 └── README.md
 ```
 
@@ -30,22 +30,23 @@ azure-pipelines/
 
 ### CI pipelines
 
-| Pipeline | Trigger | Purpose |
-|----------|---------|---------|
-| `ci-elt.yaml` | Push / PR to `src/workloads/elt/**` | Ruff lint, mypy type‑check, pytest (unit + data quality + integration), validate function bindings |
-| `ci-ml-training.yaml` | Push / PR to `src/workloads/train/**` | Ruff lint, pytest (model tests), train LightGBM, log experiment to MLflow, register model |
-| `ci-terraform.yaml` | Push / PR to `src/terraform/main/**` | `terraform fmt`, `validate`, deterministic plan (plan artifact published) |
-| `full_repo_security_scan.yaml` | Push to `main` (batched) | OpenGrep SAST, Gitleaks full‑history secrets detection, Trivy filesystem vulnerability scan |
+| Pipeline | Trigger (paths) | Purpose |
+|----------|-----------------|---------|
+| `ci-elt.yaml` | `src/workloads/training_pipeline/elt/**`<br>`src/workloads/training_pipeline/utils/**` | Ruff lint, mypy, pytest for ELT (transform, schema validation) |
+| `ci-ml-training.yaml` | `src/workloads/training_pipeline/train/**`<br>`src/workloads/training_pipeline/utils/**` | Ruff lint, mypy, pytest for training (model, evaluation) |
+| `ci-container.yaml` | `src/workloads/training_pipeline/**` (any change) | Build Docker image, push to ACR with commit SHA tag |
+| `ci-terraform.yaml` | `src/terraform/main/**` | `terraform fmt`, `validate`, generate plan artifact |
+| `full_repo_security_scan.yaml` | Push to `main` (batched) | OpenGrep SAST, Gitleaks, Trivy vulnerability scan |
 
 ### CD pipelines
 
 | Pipeline | Trigger | Purpose |
 |----------|---------|---------|
-| `cd-deploy.yaml` | Automatic on CI success (main) | Parameterised deployment: ELT Function App and/or ML serving container. Stages: staging → production (with approval) |
-| `cd-terraform.yaml` | Manual only | Apply the exact plan artifact produced by `ci-terraform` to production |
+| `cd-deploy.yaml` | Automatic on CI success (main) | Deploy training container to staging → production. Parameterised to allow separate ELT/training deployments if needed. |
+| `cd-terraform.yaml` | Manual only | Apply the exact plan artifact from `ci-terraform` |
 
-The single `cd-deploy.yaml` uses **runtime parameters** (`deployELT`, `deployML`, `modelVersion`) and conditional stages.  
-When only ELT code changes, CI‑ELT triggers CD with `deployELT: true`. When a new model is registered, CI‑ML triggers CD with `deployML: true`. Both can run together without conflicts.
+The single `cd-deploy.yaml` uses **runtime parameters** (`deployContainer`, `environment`) and conditional stages.  
+On any successful CI (ELT, training, or container build), CD is triggered with `deployContainer: true`, updating the ACA Job image for the specified environment.
 
 ---
 
@@ -53,9 +54,10 @@ When only ELT code changes, CI‑ELT triggers CD with `deployELT: true`. When a 
 
 | Template | Used by | Purpose |
 |----------|---------|---------|
-| `python-ci.yaml` | `ci-elt.yaml`, `ci-ml-training.yaml` | Ruff lint, mypy, pytest with coverage, Trivy FS scan, optional Docker build & push |
-| `elt-deploy.yaml` | `cd-deploy.yaml` | Deploy Python Function App via `func azure functionapp publish --build remote` |
-| `aca-deploy.yaml` | `cd-deploy.yaml` | Canary deployment to Azure Container Apps: new revision at 0% → k6 load test (10%) → k6 load test (50%) → promote 100% or auto‑rollback |
+| `python-ci.yaml` | `ci-elt.yaml`, `ci-ml-training.yaml` | Ruff lint, mypy, pytest with coverage, Trivy FS scan |
+| `aca-deploy.yaml` | `cd-deploy.yaml` | Update Azure Container App Job image; optionally trigger a run and validate MLflow metrics |
+
+Note: No separate ELT deployment template – ELT runs inside the same container as training.
 
 ---
 
@@ -68,50 +70,49 @@ No private network or self‑hosted infrastructure is required – tool download
 
 ## Key design decisions
 
-- **Separate CI and CD** – CI is workload‑specific with path filters for fast feedback. CD is unified but conditionally executes based on parameters, avoiding duplicate pipeline logic.
-- **Decoupled data and ML** – The ELT pipeline is triggered by blob events. A storage queue message from ELT can trigger ML training. Their CI/CD remains independent, reflecting real‑world team ownership.
-- **Plan‑apply separation** – `ci-terraform` validates and publishes a plan artifact; `cd-terraform` applies **that exact artifact** with no re‑plan, reducing risk.
-- **Trunk‑based development** – Only `main` and short‑lived `feat/*` branches exist. Environment differences are managed through `.tfvars` files, not long‑lived branches.
-- **Secrets never in pipelines** – Authentication uses OIDC federation to Azure. Code uses `DefaultAzureCredential` (managed identity / workload identity federation). No connection strings or keys are stored in variables.
-- **Immutable deployments** – ELT Function App publishes with `--build remote` (code‑based, no container). ML serving containers are tagged with the Git commit SHA (`$(Build.SourceVersion)`), never `latest`.
-- **Serverless cost model** – Azure Functions and Container Apps scale to zero when idle. The pipelines themselves have zero infrastructure cost outside of execution minutes.
+- **Separate CI by domain, unified CD** – ELT and training code share a container, but CI triggers are split to validate each domain independently. CD always deploys the whole container image.
+- **Container built once** – `ci-container` is triggered by any change and produces a single immutable image tagged with `$(Build.SourceVersion)`. It runs after both domain‑specific CI pipelines pass (but can be triggered independently).
+- **Decoupled validation** – ELT tests run on sample data; training tests run with synthetic data and mock MLflow. Both must pass before container build.
+- **Plan‑apply separation** – `ci-terraform` validates and publishes a plan artifact; `cd-terraform` applies **that exact artifact** with no re‑plan.
+- **Trunk‑based development** – Only `main` and short‑lived `feat/*` branches. Environment differences via `.tfvars`.
+- **Secrets never in pipelines** – Authentication uses OIDC federation. Code uses `DefaultAzureCredential` (Managed Identity / workload identity). No connection strings in variables.
+- **Immutable deployments** – Container images tagged with Git commit SHA, never `latest`.
+- **Serverless cost model** – Container App Jobs scale to zero. Pipelines themselves have zero infrastructure cost outside of execution minutes.
 
 ---
 
 ## Conventions
 
 - File extension `.yaml` (not `.yml`).
-- Template references use the `azure-pipelines/templates/` path from the repository root.
+- Template references use `azure-pipelines/templates/` relative path.
 - All pipelines declare `pool: vmImage: ubuntu-24.04` at the top level.
-- Path triggers include the pipeline definition itself and any shared templates to ensure consistency.
-- Service connections use OIDC and are named `azdo-oidc-ci` (CI) and `azdo-oidc-cd` (CD).
-- Storage URIs are injected via environment variables (`ELT_STORAGE__blobServiceUri`, `ELT_STORAGE__queueServiceUri`) – never connection strings.
+- Path triggers include the pipeline definition itself and shared templates.
+- Service connections use OIDC, named `azdo-oidc-ci` (CI) and `azdo-oidc-cd` (CD).
+- Environment variables injected via Azure DevOps variable groups – never hard‑coded.
 
 ---
 
 ## Variable groups
 
-Each pipeline expects a corresponding variable group in Azure DevOps:
-
 | Variable group | Contains |
 |----------------|----------|
-| `elt-ci-vars` | `ELT_STORAGE__blobServiceUri`, `ELT_STORAGE__queueServiceUri`, `azureServiceConnection` |
+| `elt-ci-vars` | `AZURE_STORAGE_ACCOUNT_NAME`, `RAW_CONTAINER_NAME`, `azureServiceConnection` (for tests) |
 | `ml-ci-vars` | `MLFLOW_TRACKING_URI`, `containerRegistry`, `azureServiceConnection` |
+| `container-ci-vars` | `containerRegistry`, `azureServiceConnection` (for build/push) |
 | `terraform-ci-vars` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` |
-| `terraform-cd-vars` | Same as `terraform-ci-vars` |
-| `deployment-vars` | `containerRegistry`, `azureServiceConnection`, `FUNCTION_APP_NAME`, `CONTAINER_APP_NAME`, staging/production resource groups |
+| `terraform-cd-vars` | Same as terraform‑ci |
+| `deployment-vars` | `containerRegistry`, `azureServiceConnection`, `CONTAINER_APP_JOB_NAME`, staging/production resource groups |
 
 ---
 
 ## How to run
 
-1. **Push to `src/workloads/elt/**`** → `ci-elt` runs automatically: lint → type‑check → tests → bindings validation.  
-2. **Push to `src/workloads/train/**`** → `ci-ml-training` runs: lint → model tests → training → MLflow experiment logging → model registration.  
-3. **Push to `src/terraform/main/**`** → `ci-terraform` runs: format check, validate, plan (plan artifact published).  
-4. **Merge to `main`** – the same CI pipelines run again. On success, they trigger `cd-deploy` with appropriate parameters:  
-   - ELT changes deploy to staging, then production.  
-   - ML changes build a Docker image, deploy to Container Apps with canary rollout (10% → k6 test → 50% → k6 test → 100% or rollback).  
-5. **Infrastructure changes** – a human with appropriate permissions manually triggers `cd-terraform` to apply the reviewed plan artifact.
+1. **Push to `src/workloads/training_pipeline/elt/`** → `ci-elt` runs: lint → type‑check → ELT unit tests.
+2. **Push to `src/workloads/training_pipeline/train/`** → `ci-ml-training` runs: lint → type‑check → training tests.
+3. **Push to `src/workloads/training_pipeline/` (any change)** → `ci-container` runs: build image → push to ACR.
+4. **Push to `src/terraform/main/`** → `ci-terraform` runs: fmt, validate, plan.
+5. **Merge to `main`** – all CI pipelines run again. On success, `cd-deploy` is triggered with `deployContainer: true`, updating the ACA Job in staging. After manual approval, promote to production.
+6. **Infrastructure changes** – human manually triggers `cd-terraform` to apply the approved plan.
 
 ---
 
@@ -119,9 +120,9 @@ Each pipeline expects a corresponding variable group in Azure DevOps:
 
 The `full_repo_security_scan.yaml` pipeline runs on every push to `main` and uses:
 
-- **OpenGrep** – multi‑language SAST with OWASP Top Ten and Docker rulesets.
-- **Gitleaks** – full git‑history secrets detection (respects `.gitleaks.toml` if present).
-- **Trivy** – filesystem vulnerability and misconfiguration scan (CRITICAL severity, respects `.trivyignore`).
+- **OpenGrep** – SAST with OWASP Top Ten and Docker rulesets.
+- **Gitleaks** – full‑history secrets detection.
+- **Trivy** – filesystem vulnerability and misconfiguration scan (CRITICAL severity).
 
 Tool binaries are downloaded with pinned SHAs and verified at runtime. The scan runs on a clean ephemeral agent with full repository history.
 
@@ -129,10 +130,9 @@ Tool binaries are downloaded with pinned SHAs and verified at runtime. The scan 
 
 ## Adding a new workload
 
-1. Create a new `ci-<workload>.yaml` in `ci/` following the existing pattern (use `python-ci.yaml` template for Python workloads).  
-2. In `cd-deploy.yaml`, add new parameters (e.g., `deployNewWorkload`) and a new conditional stage that uses the appropriate deployment template.  
-3. Create a corresponding variable group in Azure DevOps and link it to the pipeline.  
-4. Ensure the workload adheres to the project conventions:  
-   - Uses `DefaultAzureCredential` for all Azure access.  
-   - Configuration via environment variables, never hard‑coded secrets.  
-   - If serverless, respects scale‑to‑zero design.
+1. Place new code under `src/workloads/<new-workload>/`.
+2. Create a new CI pipeline `ci-<workload>.yaml` with appropriate path filters.
+3. If it affects the training container, extend `ci-container.yaml` to include the new paths.
+4. Update `cd-deploy.yaml` parameters if the new workload requires separate deployment logic.
+5. Create a corresponding variable group in Azure DevOps.
+6. Ensure the workload follows conventions: `DefaultAzureCredential`, environment variables, scale‑to‑zero if serverless.

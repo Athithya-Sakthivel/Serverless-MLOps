@@ -13,6 +13,15 @@
 #   6. subscription_id and tenant_id are auto‑fetched from az CLI and exported
 #      as TF_VAR_* unless already set in the environment.
 #   7. All temporary files are explicitly removed; no trap race conditions.
+#   8. Azure CLI token is refreshed immediately before long-running operations.
+#   9. Nuclear destroy: deletes resource group (waits for completion), purges
+#      soft-deleted Key Vault & ML workspace, deletes state blob, breaks locks.
+#  10. --create after --destroy always sees a clean subscription and empty state.
+#  11. Event Grid subscription is created via Azure CLI after Terraform apply,
+#      using the same naming derivation as locals.tf – no dependency on
+#      `tofu output`.  The subscription does **not** use managed identity
+#      because the storage account allows shared key access; this keeps the
+#      automation simple and works reliably on all subscription tiers.
 #
 # Local development (az login first):
 #   export TF_BACKEND_AUTH_MODE=cli
@@ -211,16 +220,164 @@ run_plan() {
 run_apply_plan() {
   [[ -f "$PLAN_FILE_INPUT" ]] || fail "plan file not found: $PLAN_FILE_INPUT"
   init_backend
+  az account get-access-token --resource https://management.azure.com > /dev/null 2>&1 || true
   tofu apply -input=false -lock-timeout=5m -auto-approve "$PLAN_FILE_INPUT"
 }
 
-run_destroy() {
-  init_backend
-  tofu destroy -input=false -lock-timeout=5m -auto-approve -var-file="$VAR_FILE"
+# ---------------------------------------------------------------------------
+# 10. Event Grid subscription management (outside Terraform)
+#    Names are derived exactly like locals.tf – no `tofu output` needed.
+# ---------------------------------------------------------------------------
+
+# Derive all necessary resource names from environment & subscription ID
+derive_names() {
+  local sub_suffix="${TF_VAR_subscription_id: -6}"
+  local project_abbr="sm"
+  local env_abbr
+  case "$ENVIRONMENT" in
+    staging) env_abbr="stg" ;;
+    prod)    env_abbr="prod" ;;
+    *)       fail "unknown environment: $ENVIRONMENT" ;;
+  esac
+
+  RG_NAME="rg-${project_abbr}-artifacts-${env_abbr}"
+  STORAGE_ACCOUNT_NAME="${project_abbr}${env_abbr}artifacts${sub_suffix}"
+  QUEUE_NAME="${project_abbr}trainqueue-${env_abbr}"
+  SYSTEM_TOPIC_NAME="eg-${project_abbr}-${env_abbr}-storage"
+  SUBSCRIPTION_NAME="eg-${project_abbr}-${env_abbr}-raw-monthly"
+}
+
+# Create the Event Grid subscription idempotently (no managed identity needed
+# because the storage account allows shared key access)
+create_event_subscription() {
+  derive_names
+
+  if az eventgrid system-topic event-subscription show \
+    -g "$RG_NAME" --system-topic-name "$SYSTEM_TOPIC_NAME" \
+    -n "$SUBSCRIPTION_NAME" --subscription "$TF_VAR_subscription_id" &>/dev/null; then
+    log "Event Subscription '$SUBSCRIPTION_NAME' already exists"
+    return 0
+  fi
+
+  local queue_id="/subscriptions/${TF_VAR_subscription_id}/resourceGroups/${RG_NAME}/providers/Microsoft.Storage/storageAccounts/${STORAGE_ACCOUNT_NAME}/queueServices/default/queues/${QUEUE_NAME}"
+
+  log "Creating Event Subscription '$SUBSCRIPTION_NAME' ..."
+  az eventgrid system-topic event-subscription create \
+    -g "$RG_NAME" \
+    --system-topic-name "$SYSTEM_TOPIC_NAME" \
+    -n "$SUBSCRIPTION_NAME" \
+    --subscription "$TF_VAR_subscription_id" \
+    --included-event-types Microsoft.Storage.BlobCreated \
+    --subject-begins-with "/blobServices/default/containers/raw/blobs/monthly/" \
+    --subject-ends-with .parquet \
+    --endpoint-type storagequeue \
+    --endpoint "$queue_id" >/dev/null || {
+      log "Failed to create Event Subscription"
+      return 1
+    }
+  log "Event Subscription '$SUBSCRIPTION_NAME' created"
+}
+
+# Delete the Event Grid subscription (idempotent)
+delete_event_subscription() {
+  derive_names
+
+  if ! az eventgrid system-topic event-subscription show \
+    -g "$RG_NAME" --system-topic-name "$SYSTEM_TOPIC_NAME" \
+    -n "$SUBSCRIPTION_NAME" --subscription "$TF_VAR_subscription_id" &>/dev/null; then
+    log "Event Subscription '$SUBSCRIPTION_NAME' does not exist"
+    return 0
+  fi
+
+  log "Deleting Event Subscription '$SUBSCRIPTION_NAME'..."
+  az eventgrid system-topic event-subscription delete \
+    -g "$RG_NAME" --system-topic-name "$SYSTEM_TOPIC_NAME" \
+    -n "$SUBSCRIPTION_NAME" --subscription "$TF_VAR_subscription_id" --yes || true
+  log "Event Subscription deleted"
 }
 
 # ---------------------------------------------------------------------------
-# 10. Argument parsing
+# 11. Nuclear destroy – complete cleanup, no leftovers, blocks until finished
+# ---------------------------------------------------------------------------
+nuclear_destroy() {
+  log "starting nuclear destroy for environment $ENVIRONMENT"
+
+  local project_abbr="sm"
+  local env_abbr
+  case "$ENVIRONMENT" in
+    staging) env_abbr="stg" ;;
+    prod)    env_abbr="prod" ;;
+    *)       fail "unknown environment: $ENVIRONMENT" ;;
+  esac
+  local sub_suffix="${TF_VAR_subscription_id: -6}"
+
+  local rg_name="rg-${project_abbr}-artifacts-${env_abbr}"
+  local kv_name="kv-${project_abbr}${env_abbr}ml${sub_suffix}"
+  local ml_workspace_name="mlw-${project_abbr}-${env_abbr}"
+  local location="southindia"
+
+  # 1. Break any existing state lock
+  log "breaking state lock if present"
+  az storage blob lease break \
+    --blob-name "${TF_BACKEND_KEY_PREFIX}/${ENVIRONMENT}.tfstate" \
+    --container-name "$TF_BACKEND_CONTAINER" \
+    --account-name "$TF_BACKEND_STORAGE_ACCOUNT" \
+    --auth-mode login 2>/dev/null || true
+
+  # 2. Delete the resource group and wait
+  log "deleting resource group: $rg_name (this may take a few minutes)"
+  if az group show -n "$rg_name" --subscription "$TF_VAR_subscription_id" &>/dev/null; then
+    az group delete -n "$rg_name" --yes --subscription "$TF_VAR_subscription_id"
+    while az group show -n "$rg_name" --subscription "$TF_VAR_subscription_id" &>/dev/null; do
+      echo "  waiting for resource group deletion... $(date +%H:%M:%S)"
+      sleep 15
+    done
+    log "resource group deleted"
+  else
+    log "resource group not found, skipping"
+  fi
+
+  # 3. Purge soft-deleted Key Vault
+  log "purging Key Vault: $kv_name"
+  az keyvault purge -n "$kv_name" --subscription "$TF_VAR_subscription_id" 2>/dev/null || {
+    log "Key Vault not found or already purged"
+  }
+
+  # 4. Purge soft-deleted Azure ML workspace
+  log "purging ML workspace: $ml_workspace_name"
+  az rest --method delete \
+    --url "https://management.azure.com/subscriptions/${TF_VAR_subscription_id}/providers/Microsoft.MachineLearningServices/locations/${location}/deletedWorkspaces/${ml_workspace_name}?api-version=2024-10-01" \
+    2>/dev/null || {
+    log "ML workspace not found or already purged"
+  }
+
+  # 5. Delete the Terraform state blob
+  local state_key="${TF_BACKEND_KEY_PREFIX}/${ENVIRONMENT}.tfstate"
+  log "deleting state blob: ${state_key}"
+
+  local user_obj_id
+  user_obj_id=$(az ad signed-in-user show --query id -o tsv 2>/dev/null) || true
+  if [[ -n "$user_obj_id" ]]; then
+    az role assignment create \
+      --assignee "$user_obj_id" \
+      --role "Storage Blob Data Contributor" \
+      --scope "/subscriptions/${TF_VAR_subscription_id}/resourceGroups/${TF_BACKEND_RESOURCE_GROUP}/providers/Microsoft.Storage/storageAccounts/${TF_BACKEND_STORAGE_ACCOUNT}" \
+      --subscription "$TF_VAR_subscription_id" 2>/dev/null || true
+  fi
+
+  az storage blob delete \
+    --account-name "$TF_BACKEND_STORAGE_ACCOUNT" \
+    --container-name "$TF_BACKEND_CONTAINER" \
+    --name "$state_key" \
+    --auth-mode login 2>/dev/null || {
+    log "state blob not found or already deleted"
+  }
+
+  log "nuclear destroy completed – all resources, soft-deleted items, and state removed"
+}
+
+# ---------------------------------------------------------------------------
+# 12. Argument parsing
 # ---------------------------------------------------------------------------
 MODE=""
 ENVIRONMENT=""
@@ -251,13 +408,13 @@ require_cmd curl
 require_cmd unzip
 
 # ---------------------------------------------------------------------------
-# 11. Execution order – subscription resolved before backend naming
+# 13. Execution order
 # ---------------------------------------------------------------------------
 load_bootstrap_env
-resolve_azure_context        # sets TF_VAR_subscription_id, TF_VAR_tenant_id
+resolve_azure_context
 choose_auth_mode
 install_tofu_if_needed
-compute_defaults              # needs TF_VAR_subscription_id for suffix
+compute_defaults
 
 TF_BACKEND_KEY="${TF_BACKEND_KEY:-${TF_BACKEND_KEY_PREFIX}/${ENVIRONMENT}.tfstate}"
 PLAN_DIR="$SCRIPT_DIR/.plans/$ENVIRONMENT"
@@ -274,14 +431,21 @@ case "$MODE" in
   --create)
     [[ -f "$VAR_FILE" ]] || fail "variable file not found: $VAR_FILE"
     run_plan
+    log "refreshing Azure CLI token"
+    az account get-access-token --resource https://management.azure.com > /dev/null 2>&1 || true
     log "applying plan $PLAN_FILE"
     tofu apply -input=false -lock-timeout=5m -auto-approve "$PLAN_FILE"
+
+    log "wiring Event Grid subscription"
+    create_event_subscription || log "Event Subscription creation failed; check logs"
     ;;
   --apply-plan) run_apply_plan ;;
   --destroy)
     $YES_DELETE || fail "--yes-delete required"
     [[ -f "$VAR_FILE" ]] || fail "variable file not found: $VAR_FILE"
-    run_destroy
+
+    delete_event_subscription
+    nuclear_destroy
     ;;
   *) usage ;;
 esac

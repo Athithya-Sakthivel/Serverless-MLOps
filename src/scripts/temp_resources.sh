@@ -62,7 +62,7 @@ ROWS="${ROWS:-32500}"
 HF_TOKEN="${HF_TOKEN:-}"
 
 FUNCTION_RUNTIME="${FUNCTION_RUNTIME:-python}"
-FUNCTION_RUNTIME_VERSION="${FUNCTION_RUNTIME_VERSION:-3.11}"
+FUNCTION_RUNTIME_VERSION="${FUNCTION_RUNTIME_VERSION:-3.14}"
 
 # -----------------------------------------------------------------------------
 # Helpers

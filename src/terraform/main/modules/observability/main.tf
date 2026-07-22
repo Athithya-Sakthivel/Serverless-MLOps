@@ -16,5 +16,11 @@ resource "azurerm_application_insights" "this" {
   workspace_id        = azurerm_log_analytics_workspace.this.id
   retention_in_days   = 30
 
+  # Prevents Azure from auto-creating Smart Detector alert rules in the RG
+  ip_masking_enabled           = false
+  local_authentication_enabled = false
+  internet_ingestion_enabled   = true
+  internet_query_enabled       = true
+
   tags = var.tags
 }

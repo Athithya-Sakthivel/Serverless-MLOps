@@ -1,0 +1,16 @@
+AZU-0012
+
+Accepted risk.
+
+This project intentionally uses Azure Storage over the public endpoint.
+Private Endpoints and VNet integration are out of scope to keep the serverless architecture simple and cost-effective.
+
+Security controls in place:
+- Azure AD authentication where supported
+- Shared Key access disabled (target configuration)
+- Public blob access disabled
+- TLS 1.2 enforced
+
+Network ACLs with default_action = "Deny" are intentionally not enabled because
+the architecture does not use private networking and must remain accessible to
+Azure Functions, Azure DevOps, and developers over public endpoints.

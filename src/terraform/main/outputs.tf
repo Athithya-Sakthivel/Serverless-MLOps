@@ -18,6 +18,14 @@ output "storage_account_blob_endpoint" {
   value = module.state.storage_account_blob_endpoint
 }
 
+output "ml_storage_account_name" {
+  value = module.ml_workspace.ml_storage_account_name
+}
+
+output "ml_storage_account_id" {
+  value = module.ml_workspace.ml_storage_account_id
+}
+
 output "acr_name" {
   value = module.state.acr_name
 }
@@ -68,18 +76,70 @@ output "action_group_id" {
   value = module.observability.action_group_id
 }
 
-output "app_request_failure_alert_id" {
-  value = module.observability.app_request_failure_alert_id
+output "ml_workspace_name" {
+  value = module.ml_workspace.workspace_name
 }
 
-output "app_slow_request_alert_id" {
-  value = module.observability.app_slow_request_alert_id
+output "ml_workspace_id" {
+  value = module.ml_workspace.workspace_id
 }
 
-output "app_exception_alert_id" {
-  value = module.observability.app_exception_alert_id
+output "mlflow_tracking_uri" {
+  value = module.ml_workspace.mlflow_tracking_uri
 }
 
-output "app_validation_failure_alert_id" {
-  value = module.observability.app_validation_failure_alert_id
+output "ml_key_vault_name" {
+  value = module.ml_workspace.key_vault_name
+}
+
+output "ml_key_vault_id" {
+  value = module.ml_workspace.key_vault_id
+}
+
+output "ml_key_vault_uri" {
+  value = module.ml_workspace.key_vault_uri
+}
+
+output "aca_environment_name" {
+  value = module.aca.environment_name
+}
+
+output "aca_environment_id" {
+  value = module.aca.environment_id
+}
+
+output "aca_train_job_name" {
+  value = module.aca.train_job_name
+}
+
+output "aca_train_job_id" {
+  value = module.aca.train_job_id
+}
+
+output "aca_serve_app_name" {
+  value = module.aca.serve_app_name
+}
+
+output "aca_serve_app_id" {
+  value = module.aca.serve_app_id
+}
+
+output "aca_serve_app_latest_revision_fqdn" {
+  value = module.aca.serve_app_latest_revision_fqdn
+}
+
+output "aca_serve_app_latest_revision_name" {
+  value = module.aca.serve_app_latest_revision_name
+}
+
+output "event_grid_system_topic_name" {
+  value = module.eventing.system_topic_name
+}
+
+output "event_grid_system_topic_id" {
+  value = module.eventing.system_topic_id
+}
+
+output "aca_storage_queue_name" {
+  value = module.eventing.storage_queue_name
 }

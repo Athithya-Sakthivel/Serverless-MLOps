@@ -35,19 +35,3 @@ output "workbook_name" {
 output "action_group_id" {
   value = azurerm_monitor_action_group.this.id
 }
-
-output "app_request_failure_alert_id" {
-  value = azurerm_monitor_scheduled_query_rules_alert_v2.app_request_failures.id
-}
-
-output "app_slow_request_alert_id" {
-  value = azurerm_monitor_scheduled_query_rules_alert_v2.app_slow_requests.id
-}
-
-output "app_exception_alert_id" {
-  value = azurerm_monitor_scheduled_query_rules_alert_v2.app_exceptions.id
-}
-
-output "app_validation_failure_alert_id" {
-  value = azurerm_monitor_scheduled_query_rules_alert_v2.app_validation_failures.id
-}
