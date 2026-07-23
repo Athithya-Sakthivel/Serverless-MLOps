@@ -18,7 +18,7 @@ pool:
   vmImage: ubuntu-24.04
 
 variables:
-  - group: terraform-vars        # <-- automatically exports TF_VAR_* into the environment
+  - group: terraform-vars
 
 steps:
   - checkout: self
@@ -44,9 +44,10 @@ steps:
         export ARM_USE_OIDC="true"
         export TF_INPUT="false"
 
-        # TF_VAR_location and TF_VAR_alert_email_address are already set
-        # from the variable group; no need to export them again.
         ./run.sh --plan --env staging
+    env:
+      AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
+      AZDO_PERSONAL_ACCESS_TOKEN: $(AZDO_PERSONAL_ACCESS_TOKEN)
 
   - task: PublishPipelineArtifact@1
     displayName: 'Publish Terraform plan'
