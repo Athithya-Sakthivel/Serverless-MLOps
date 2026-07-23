@@ -1,11 +1,11 @@
 alert_email_address = "athithya651@gmail.com"
+
 tags = {
   app     = "serverless-mlops"
   owner   = "athithya"
   env     = "staging"
   project = "serverless-mlops"
 }
-
 
 location    = "southindia" # eventbridge down in centralindia
 environment = "staging"
@@ -25,7 +25,7 @@ event_raw_container_name = "raw"
 event_raw_blob_prefix    = "monthly/"
 
 # Alert toggles – flip to true when your quota allows
-enable_request_failures_alert    = false
+enable_request_failures_alert    = true
 enable_slow_requests_alert       = false
 enable_exceptions_alert          = false
-enable_validation_failures_alert = false
+enable_validation_failures_alert = true

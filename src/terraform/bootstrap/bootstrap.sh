@@ -9,6 +9,9 @@
 #   4) Write generated backend variables for src/terraform/main.
 #   5) Write a real tracked file under src/terraform/main to trigger CI.
 #
+# bash src/terraform/bootstrap/bootstrap.sh --create
+# bash src/terraform/bootstrap/bootstrap.sh --delete --force
+#
 # Notes:
 #   - Bootstrap state uses access_key auth to avoid Azure CLI credential clashes.
 #   - Main stack backend config is generated separately for run.sh to consume.
