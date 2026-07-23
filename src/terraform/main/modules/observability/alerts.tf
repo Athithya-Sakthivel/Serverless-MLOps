@@ -13,7 +13,3 @@ resource "azurerm_monitor_action_group" "this" {
 
   tags = var.tags
 }
-
-# Alert rules removed because Azure for Students lacks
-# Microsoft.Insights/scheduledQueryRules/write. To enable them,
-# set up a separate script with Monitoring Contributor role.

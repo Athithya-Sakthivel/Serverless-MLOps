@@ -6,8 +6,8 @@ data "azuredevops_project" "main" {
 }
 
 data "azuredevops_serviceendpoint_github" "main" {
-  project_id = data.azuredevops_project.main.id
-  name       = var.github_service_connection_name
+  project_id            = data.azuredevops_project.main.id
+  service_endpoint_name = var.github_service_connection_name
 }
 
 # ------------------------------------------------------------------------------
@@ -15,7 +15,7 @@ data "azuredevops_serviceendpoint_github" "main" {
 # ------------------------------------------------------------------------------
 resource "azuredevops_build_definition" "elt_ci" {
   project_id = data.azuredevops_project.main.id
-  name       = "${var.project_name}-elt-ci"
+  name       = "${var.github_repo}-elt-ci"
   path       = "\\"
 
   ci_trigger {

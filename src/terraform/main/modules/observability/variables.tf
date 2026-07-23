@@ -58,3 +58,27 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "enable_request_failures_alert" {
+  description = "Toggle for request-failures alert rule."
+  type        = bool
+  default     = false
+}
+
+variable "enable_slow_requests_alert" {
+  description = "Toggle for slow-requests alert rule."
+  type        = bool
+  default     = false
+}
+
+variable "enable_exceptions_alert" {
+  description = "Toggle for exceptions alert rule."
+  type        = bool
+  default     = false
+}
+
+variable "enable_validation_failures_alert" {
+  description = "Toggle for validation-failures alert rule."
+  type        = bool
+  default     = false
+}

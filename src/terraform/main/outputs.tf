@@ -143,3 +143,13 @@ output "event_grid_system_topic_id" {
 output "aca_storage_queue_name" {
   value = module.eventing.storage_queue_name
 }
+
+# ─── Azure DevOps module outputs ─────────────────────────────────────────
+
+output "elt_ci_pipeline_id" {
+  value = module.azure_devops.elt_ci_pipeline_id
+}
+
+output "elt_ci_variable_group_id" {
+  value = module.azure_devops.elt_ci_variable_group_id
+}

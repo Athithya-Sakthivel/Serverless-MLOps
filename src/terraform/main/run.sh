@@ -19,11 +19,12 @@
 #  10. --create after --destroy always sees a clean subscription and empty state.
 #  11. Event Grid subscription is created via Azure CLI after Terraform apply,
 #      using the same naming derivation as locals.tf – no dependency on
-#      `tofu output`.  The subscription does **not** use managed identity
-#      because the storage account allows shared key access; this keeps the
-#      automation simple and works reliably on all subscription tiers.
+#      `tofu output`.
 #  12. Azure DevOps pipeline + variable‑group variables are auto‑derived from
-#      the subscription and git remote.  No extra tfvars entries needed.
+#      the subscription and git remote.
+#  13. Azure DevOps provider credentials are mapped from TF_VAR_AZDO_* to plain
+#      env vars so the provider block works without hardcoding.
+#  14. Every --create regenerates the plan from scratch (never reuses a stale plan).
 #
 # Local development (az login first):
 #   export TF_BACKEND_AUTH_MODE=cli
@@ -39,7 +40,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-# --- Always run from the script's directory ----------------------------------
+# Always run from the script's directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "$SCRIPT_DIR" || { echo "ERROR: cannot cd to $SCRIPT_DIR" >&2; exit 1; }
 
@@ -214,7 +215,7 @@ prepare_stack() {
 
 run_plan() {
   ensure_plan_dir
-  rm -f "$PLAN_FILE"
+  rm -f "$PLAN_FILE"                     # always delete old plan first
   prepare_stack
   tofu plan -input=false -lock-timeout=5m -var-file="$VAR_FILE" -out="$PLAN_FILE"
 }
@@ -456,6 +457,23 @@ install_tofu_if_needed
 compute_defaults
 resolve_ado_vars          # sets all Azure DevOps module variables automatically
 
+# ---- Make Azure DevOps credentials available to the provider ----------------
+# The azuredevops provider in providers.tf expects plain environment
+# variables AZDO_ORG_SERVICE_URL and AZDO_PERSONAL_ACCESS_TOKEN.
+# We map them from the TF_VAR_* equivalents that the user already has.
+if [[ -n "${TF_VAR_AZDO_ORG_SERVICE_URL:-}" ]]; then
+  export AZDO_ORG_SERVICE_URL="$TF_VAR_AZDO_ORG_SERVICE_URL"
+elif [[ -n "${TF_VAR_ado_org_service_url:-}" ]]; then
+  export AZDO_ORG_SERVICE_URL="$TF_VAR_ado_org_service_url"
+fi
+
+if [[ -n "${TF_VAR_AZDO_PERSONAL_ACCESS_TOKEN:-}" ]]; then
+  export AZDO_PERSONAL_ACCESS_TOKEN="$TF_VAR_AZDO_PERSONAL_ACCESS_TOKEN"
+elif [[ -n "${TF_VAR_ado_personal_access_token:-}" ]]; then
+  export AZDO_PERSONAL_ACCESS_TOKEN="$TF_VAR_ado_personal_access_token"
+fi
+# ---------------------------------------------------------------------------
+
 TF_BACKEND_KEY="${TF_BACKEND_KEY:-${TF_BACKEND_KEY_PREFIX}/${ENVIRONMENT}.tfstate}"
 PLAN_DIR="$SCRIPT_DIR/.plans/$ENVIRONMENT"
 PLAN_FILE="$PLAN_DIR/plan.tfplan"
@@ -470,10 +488,10 @@ case "$MODE" in
     ;;
   --create)
     [[ -f "$VAR_FILE" ]] || fail "variable file not found: $VAR_FILE"
-    run_plan
+    run_plan                              # always fresh plan (rm -f inside)
     log "refreshing Azure CLI token"
     az account get-access-token --resource https://management.azure.com > /dev/null 2>&1 || true
-    log "applying plan $PLAN_FILE"
+    log "applying fresh plan $PLAN_FILE"
     tofu apply -input=false -lock-timeout=5m -auto-approve "$PLAN_FILE"
 
     log "wiring Event Grid subscription"

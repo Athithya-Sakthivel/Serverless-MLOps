@@ -24,7 +24,7 @@ locals {
   workbook_display_name        = "Serverless MLOps - ${var.environment == "staging" ? "Staging" : "Production"}"
   action_group_name            = "ag-${local.project_abbr}-${local.env_abbr}"
   action_group_short_name      = "${local.project_abbr}${local.env_abbr}"
-  ml_workspace_name            = "mlw-${local.project_abbr}-${local.env_abbr}-s2"
+  ml_workspace_name            = "mlw-${local.project_abbr}-${local.env_abbr}-s7"
   ml_key_vault_name            = "kv-${local.project_abbr}${local.env_abbr}ml${local.sub_suffix}"
   ml_storage_account_name      = "${local.project_abbr}${local.env_abbr}mlsa${local.sub_suffix}"
 

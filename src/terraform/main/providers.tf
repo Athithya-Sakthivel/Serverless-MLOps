@@ -17,3 +17,7 @@ provider "azurerm" {
 provider "azuread" {
   tenant_id = var.tenant_id
 }
+
+# Authenticated via environment variables:
+# AZDO_ORG_SERVICE_URL and AZDO_PERSONAL_ACCESS_TOKEN
+provider "azuredevops" {}

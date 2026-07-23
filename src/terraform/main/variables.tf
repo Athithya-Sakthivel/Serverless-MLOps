@@ -8,17 +8,9 @@ variable "tenant_id" {
   type        = string
 }
 
-
 variable "location" {
-  description = "Azure region for the main Terraform deployment."
+  description = "Azure region for application resources."
   type        = string
-  default     = "southindia"
-}
-
-variable "alert_email_address" {
-  description = "Email address for Azure Monitor alerts."
-  type        = string
-  default     = "athithya651@gmail.com"
 }
 
 variable "environment" {
@@ -84,6 +76,9 @@ variable "event_raw_blob_prefix" {
   default     = "monthly/"
 }
 
+
+# ─── Azure DevOps module inputs (auto‑exported by run.sh) ───────────────
+
 variable "ado_project_name" {
   description = "Azure DevOps project name (from bootstrap)."
   type        = string
@@ -122,4 +117,28 @@ variable "state_storage_account_name" {
 variable "state_container_name" {
   description = "Blob container for remote state."
   type        = string
+}
+
+variable "enable_request_failures_alert" {
+  description = "Enable the request-failures scheduled query alert."
+  type        = bool
+  default     = false
+}
+
+variable "enable_slow_requests_alert" {
+  description = "Enable the slow-requests scheduled query alert."
+  type        = bool
+  default     = false
+}
+
+variable "enable_exceptions_alert" {
+  description = "Enable the exceptions scheduled query alert."
+  type        = bool
+  default     = false
+}
+
+variable "enable_validation_failures_alert" {
+  description = "Enable the validation-failures scheduled query alert."
+  type        = bool
+  default     = false
 }

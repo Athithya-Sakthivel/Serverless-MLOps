@@ -74,3 +74,19 @@ variable "github_repo" {
     error_message = "github_repo must be a non-empty repository name without slashes."
   }
 }
+
+# Variables for the terraform-vars variable group.
+# These are consumed by variable_group_for_tf_main.tf.
+# Set them via TF_VAR_location and TF_VAR_alert_email_address in the environment.
+
+variable "location" {
+  description = "Azure region for the main Terraform deployment."
+  type        = string
+  default     = "southindia"
+}
+
+variable "alert_email_address" {
+  description = "Email address for Azure Monitor alerts."
+  type        = string
+  default     = "athithya651@gmail.com"
+}

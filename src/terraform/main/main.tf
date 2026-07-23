@@ -13,16 +13,20 @@ module "state" {
 module "observability" {
   source = "./modules/observability"
 
-  resource_group_name          = module.state.resource_group_name
-  location                     = var.location
-  environment                  = var.environment
-  log_analytics_workspace_name = local.log_analytics_workspace_name
-  application_insights_name    = local.application_insights_name
-  workbook_display_name        = local.workbook_display_name
-  action_group_name            = local.action_group_name
-  action_group_short_name      = local.action_group_short_name
-  alert_email_address          = var.alert_email_address
-  tags                         = local.common_tags
+  resource_group_name              = module.state.resource_group_name
+  location                         = var.location
+  environment                      = var.environment
+  log_analytics_workspace_name     = local.log_analytics_workspace_name
+  application_insights_name        = local.application_insights_name
+  workbook_display_name            = local.workbook_display_name
+  action_group_name                = local.action_group_name
+  action_group_short_name          = local.action_group_short_name
+  alert_email_address              = var.alert_email_address
+  enable_request_failures_alert    = var.enable_request_failures_alert
+  enable_slow_requests_alert       = var.enable_slow_requests_alert
+  enable_exceptions_alert          = var.enable_exceptions_alert
+  enable_validation_failures_alert = var.enable_validation_failures_alert
+  tags                             = local.common_tags
 }
 
 module "ml_workspace" {
@@ -84,11 +88,9 @@ module "aca" {
   tags       = local.common_tags
 }
 
-
 module "azure_devops" {
   source = "./modules/azure_devops"
 
-  # Project & connections – must match what bootstrap created
   project_name                   = var.ado_project_name
   github_service_connection_name = var.ado_github_service_connection_name
   azure_service_connection_name  = var.ado_azure_service_connection_name
@@ -96,9 +98,8 @@ module "azure_devops" {
   github_repo                    = var.github_repo
   branch                         = "main"
 
-  # Remote state backend (the same storage account that holds this environment's state)
-  tfstate_resource_group_name    = var.state_rg_name
-  tfstate_storage_account_name   = var.state_storage_account_name
-  tfstate_container_name         = var.state_container_name
-  tfstate_key                    = "main/terraform/${var.environment}.tfstate"
+  tfstate_resource_group_name  = var.state_rg_name
+  tfstate_storage_account_name = var.state_storage_account_name
+  tfstate_container_name       = var.state_container_name
+  tfstate_key                  = "main/terraform/${var.environment}.tfstate"
 }

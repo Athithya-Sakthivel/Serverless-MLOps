@@ -24,3 +24,8 @@ aca_serve_port     = 80
 event_raw_container_name = "raw"
 event_raw_blob_prefix    = "monthly/"
 
+# Alert toggles – flip to true when your quota allows
+enable_request_failures_alert    = false
+enable_slow_requests_alert       = false
+enable_exceptions_alert          = false
+enable_validation_failures_alert = false
