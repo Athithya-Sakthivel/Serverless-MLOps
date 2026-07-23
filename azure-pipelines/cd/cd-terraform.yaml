@@ -10,6 +10,9 @@ resources:
 pool:
   vmImage: ubuntu-24.04
 
+variables:
+  - group: terraform-vars        # <-- same group, exports TF_VAR_*
+
 jobs:
   - deployment: apply_terraform
     displayName: 'Plan and apply Terraform'
@@ -42,4 +45,6 @@ jobs:
                   export ARM_USE_OIDC="true"
                   export TF_IN_AUTOMATION="true"
 
+                  # TF_VAR_location and TF_VAR_alert_email_address are
+                  # already present from the variable group.
                   ./run.sh --create --env staging

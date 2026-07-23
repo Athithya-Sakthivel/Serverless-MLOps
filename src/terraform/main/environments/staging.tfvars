@@ -24,5 +24,3 @@ aca_serve_port     = 80
 event_raw_container_name = "raw"
 event_raw_blob_prefix    = "monthly/"
 
-
-

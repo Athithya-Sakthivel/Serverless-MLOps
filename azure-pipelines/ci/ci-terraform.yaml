@@ -17,6 +17,9 @@ pr:
 pool:
   vmImage: ubuntu-24.04
 
+variables:
+  - group: terraform-vars        # <-- automatically exports TF_VAR_* into the environment
+
 steps:
   - checkout: self
     clean: true
@@ -41,6 +44,8 @@ steps:
         export ARM_USE_OIDC="true"
         export TF_INPUT="false"
 
+        # TF_VAR_location and TF_VAR_alert_email_address are already set
+        # from the variable group; no need to export them again.
         ./run.sh --plan --env staging
 
   - task: PublishPipelineArtifact@1

@@ -8,9 +8,17 @@ variable "tenant_id" {
   type        = string
 }
 
+
 variable "location" {
-  description = "Azure region for application resources."
+  description = "Azure region for the main Terraform deployment."
   type        = string
+  default     = "southindia"
+}
+
+variable "alert_email_address" {
+  description = "Email address for Azure Monitor alerts."
+  type        = string
+  default     = "athithya651@gmail.com"
 }
 
 variable "environment" {
@@ -74,4 +82,44 @@ variable "event_raw_blob_prefix" {
   description = "Blob prefix inside the monitored container."
   type        = string
   default     = "monthly/"
+}
+
+variable "ado_project_name" {
+  description = "Azure DevOps project name (from bootstrap)."
+  type        = string
+}
+
+variable "ado_github_service_connection_name" {
+  description = "GitHub service connection name."
+  type        = string
+}
+
+variable "ado_azure_service_connection_name" {
+  description = "Azure service connection name (e.g. azdo-oidc-ci)."
+  type        = string
+}
+
+variable "github_owner" {
+  description = "GitHub repository owner."
+  type        = string
+}
+
+variable "github_repo" {
+  description = "GitHub repository name."
+  type        = string
+}
+
+variable "state_rg_name" {
+  description = "Resource group of the remote state storage account."
+  type        = string
+}
+
+variable "state_storage_account_name" {
+  description = "Storage account for remote state."
+  type        = string
+}
+
+variable "state_container_name" {
+  description = "Blob container for remote state."
+  type        = string
 }

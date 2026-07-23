@@ -83,3 +83,22 @@ module "aca" {
   serve_port = var.aca_serve_port
   tags       = local.common_tags
 }
+
+
+module "azure_devops" {
+  source = "./modules/azure_devops"
+
+  # Project & connections – must match what bootstrap created
+  project_name                   = var.ado_project_name
+  github_service_connection_name = var.ado_github_service_connection_name
+  azure_service_connection_name  = var.ado_azure_service_connection_name
+  github_owner                   = var.github_owner
+  github_repo                    = var.github_repo
+  branch                         = "main"
+
+  # Remote state backend (the same storage account that holds this environment's state)
+  tfstate_resource_group_name    = var.state_rg_name
+  tfstate_storage_account_name   = var.state_storage_account_name
+  tfstate_container_name         = var.state_container_name
+  tfstate_key                    = "main/terraform/${var.environment}.tfstate"
+}

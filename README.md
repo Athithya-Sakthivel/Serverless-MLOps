@@ -13,7 +13,6 @@
    *   **Azure Storage Account** (Terraform State Backend + ACR)
    *   **Azure Container Registry (ACR)** (Private Endpoints)
    *   **Key Vault** (Secrets Management)
-   *   **Azure Functions** (HTTP-triggered serverless compute)
    *   **Identity & Access** (Microsoft Entra ID, SAMI, Workload Identity Federation, RBAC)
    *   **Azure DevOps Organization** (CI/CD Orchestration)
 
@@ -94,6 +93,10 @@ export TF_VAR_AZDO_ORG_SERVICE_URL="https://dev.azure.com/<organization_name>"
 export TF_VAR_AZDO_PERSONAL_ACCESS_TOKEN="<azure-devops-pat>"   # Generate at https://dev.azure.com/<organization_name>/_usersSettings/tokens
 export TF_VAR_AZDO_GITHUB_SERVICE_CONNECTION_PAT="<github-pat>" # Generate at https://github.com/settings/tokens/new
 
+# variable group entries for tf main. 
+export TF_VAR_location=  # example southindia
+export TF_VAR_alert_email_address=  # example athithya651@gmail.com
+
 bash src/terraform/bootstrap/bootstrap.sh --create
 sleep 20
 git add . && git commit -m "bootstrap extend" && git push origin main
@@ -108,14 +111,6 @@ git add . && git commit -m "bootstrap extend" && git push origin main
 ![alt text](docs/screenshots/allow_ci.png)
 
 </details>
-
-# PHASE 1.3: Deploy Infrastructure to Staging
-
-Open `src/terraform/main/environments/staging.tfvars` and overwrite the `alert_email_address` and `tags.owner` fields.
-
-```bash
-git add . && git commit -m "Update main Terraform resources" && git push origin main
-```
 
 
 

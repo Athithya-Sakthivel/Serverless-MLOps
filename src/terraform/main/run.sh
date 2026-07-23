@@ -22,6 +22,8 @@
 #      `tofu output`.  The subscription does **not** use managed identity
 #      because the storage account allows shared key access; this keeps the
 #      automation simple and works reliably on all subscription tiers.
+#  12. Azure DevOps pipeline + variable‑group variables are auto‑derived from
+#      the subscription and git remote.  No extra tfvars entries needed.
 #
 # Local development (az login first):
 #   export TF_BACKEND_AUTH_MODE=cli
@@ -226,10 +228,8 @@ run_apply_plan() {
 
 # ---------------------------------------------------------------------------
 # 10. Event Grid subscription management (outside Terraform)
-#    Names are derived exactly like locals.tf – no `tofu output` needed.
 # ---------------------------------------------------------------------------
 
-# Derive all necessary resource names from environment & subscription ID
 derive_names() {
   local sub_suffix="${TF_VAR_subscription_id: -6}"
   local project_abbr="sm"
@@ -247,8 +247,6 @@ derive_names() {
   SUBSCRIPTION_NAME="eg-${project_abbr}-${env_abbr}-raw-monthly"
 }
 
-# Create the Event Grid subscription idempotently (no managed identity needed
-# because the storage account allows shared key access)
 create_event_subscription() {
   derive_names
 
@@ -278,7 +276,6 @@ create_event_subscription() {
   log "Event Subscription '$SUBSCRIPTION_NAME' created"
 }
 
-# Delete the Event Grid subscription (idempotent)
 delete_event_subscription() {
   derive_names
 
@@ -316,7 +313,6 @@ nuclear_destroy() {
   local ml_workspace_name="mlw-${project_abbr}-${env_abbr}"
   local location="southindia"
 
-  # 1. Break any existing state lock
   log "breaking state lock if present"
   az storage blob lease break \
     --blob-name "${TF_BACKEND_KEY_PREFIX}/${ENVIRONMENT}.tfstate" \
@@ -324,7 +320,6 @@ nuclear_destroy() {
     --account-name "$TF_BACKEND_STORAGE_ACCOUNT" \
     --auth-mode login 2>/dev/null || true
 
-  # 2. Delete the resource group and wait
   log "deleting resource group: $rg_name (this may take a few minutes)"
   if az group show -n "$rg_name" --subscription "$TF_VAR_subscription_id" &>/dev/null; then
     az group delete -n "$rg_name" --yes --subscription "$TF_VAR_subscription_id"
@@ -337,13 +332,11 @@ nuclear_destroy() {
     log "resource group not found, skipping"
   fi
 
-  # 3. Purge soft-deleted Key Vault
   log "purging Key Vault: $kv_name"
   az keyvault purge -n "$kv_name" --subscription "$TF_VAR_subscription_id" 2>/dev/null || {
     log "Key Vault not found or already purged"
   }
 
-  # 4. Purge soft-deleted Azure ML workspace
   log "purging ML workspace: $ml_workspace_name"
   az rest --method delete \
     --url "https://management.azure.com/subscriptions/${TF_VAR_subscription_id}/providers/Microsoft.MachineLearningServices/locations/${location}/deletedWorkspaces/${ml_workspace_name}?api-version=2024-10-01" \
@@ -351,7 +344,6 @@ nuclear_destroy() {
     log "ML workspace not found or already purged"
   }
 
-  # 5. Delete the Terraform state blob
   local state_key="${TF_BACKEND_KEY_PREFIX}/${ENVIRONMENT}.tfstate"
   log "deleting state blob: ${state_key}"
 
@@ -408,13 +400,61 @@ require_cmd curl
 require_cmd unzip
 
 # ---------------------------------------------------------------------------
-# 13. Execution order
+# 13. Auto‑derive Azure DevOps variables from subscription & git remote
+# ---------------------------------------------------------------------------
+resolve_git_remote() {
+  command -v git >/dev/null 2>&1 || return 1
+  local remote_url repo_path
+  remote_url="$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || true)"
+  [[ -n "$remote_url" ]] || return 1
+
+  case "$remote_url" in
+    https://github.com/*) repo_path="${remote_url#https://github.com/}" ;;
+    git@github.com:*)     repo_path="${remote_url#git@github.com:}" ;;
+    ssh://git@github.com/*) repo_path="${remote_url#ssh://git@github.com/}" ;;
+    *) return 1 ;;
+  esac
+
+  repo_path="${repo_path%.git}"
+  GIT_OWNER="${repo_path%%/*}"
+  GIT_REPO="${repo_path##*/}"
+  [[ -n "$GIT_OWNER" && -n "$GIT_REPO" && "$GIT_OWNER" != "$GIT_REPO" ]] || return 1
+  return 0
+}
+
+resolve_ado_vars() {
+  local sub_suffix="${TF_VAR_subscription_id: -6}"
+
+  # Project name – matches what bootstrap.sh creates
+  export TF_VAR_ado_project_name="${TF_VAR_ado_project_name:-azdo-bootstrap-${sub_suffix}}"
+
+  # Service connection names – match bootstrap.sh
+  export TF_VAR_ado_github_service_connection_name="${TF_VAR_ado_github_service_connection_name:-github-pat}"
+  export TF_VAR_ado_azure_service_connection_name="${TF_VAR_ado_azure_service_connection_name:-azdo-oidc-ci}"
+
+  # GitHub owner/repo – from git remote
+  if resolve_git_remote; then
+    export TF_VAR_github_owner="${TF_VAR_github_owner:-$GIT_OWNER}"
+    export TF_VAR_github_repo="${TF_VAR_github_repo:-$GIT_REPO}"
+  else
+    log "WARNING: unable to resolve git remote; GitHub owner/repo must be set via environment"
+  fi
+
+  # State backend details – same as used by this script (from compute_defaults)
+  export TF_VAR_state_rg_name="${TF_VAR_state_rg_name:-$TF_BACKEND_RESOURCE_GROUP}"
+  export TF_VAR_state_storage_account_name="${TF_VAR_state_storage_account_name:-$TF_BACKEND_STORAGE_ACCOUNT}"
+  export TF_VAR_state_container_name="${TF_VAR_state_container_name:-$TF_BACKEND_CONTAINER}"
+}
+
+# ---------------------------------------------------------------------------
+# 14. Execution order
 # ---------------------------------------------------------------------------
 load_bootstrap_env
 resolve_azure_context
 choose_auth_mode
 install_tofu_if_needed
 compute_defaults
+resolve_ado_vars          # sets all Azure DevOps module variables automatically
 
 TF_BACKEND_KEY="${TF_BACKEND_KEY:-${TF_BACKEND_KEY_PREFIX}/${ENVIRONMENT}.tfstate}"
 PLAN_DIR="$SCRIPT_DIR/.plans/$ENVIRONMENT"
