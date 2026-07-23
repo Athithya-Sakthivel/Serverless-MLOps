@@ -1,3 +1,18 @@
+variable "tfstate_subscription_id" {
+  description = "Subscription ID for the remote state backend."
+  type        = string
+}
+
+variable "tfstate_tenant_id" {
+  description = "Tenant ID for the remote state backend."
+  type        = string
+}
+
+variable "tfstate_client_id" {
+  description = "Client ID (service principal) for the remote state backend."
+  type        = string
+}
+
 # ---- Azure DevOps project & service connections (created by bootstrap) ----
 variable "project_name" {
   description = "Azure DevOps project name."

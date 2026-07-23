@@ -9,6 +9,11 @@ data "terraform_remote_state" "main" {
     storage_account_name = var.tfstate_storage_account_name
     container_name       = var.tfstate_container_name
     key                  = var.tfstate_key
+    use_azuread_auth     = true
+    use_oidc             = true
+    subscription_id      = var.tfstate_subscription_id
+    tenant_id            = var.tfstate_tenant_id
+    client_id            = var.tfstate_client_id
   }
 }
 

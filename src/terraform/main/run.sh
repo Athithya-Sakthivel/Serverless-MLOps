@@ -425,10 +425,11 @@ resolve_git_remote() {
 
 resolve_ado_vars() {
   local sub_suffix="${TF_VAR_subscription_id: -6}"
-
+  
+  export TF_VAR_ado_client_id="${TF_VAR_ado_client_id:-${ARM_CLIENT_ID:-}}"
   # Project name – matches what bootstrap.sh creates
   export TF_VAR_ado_project_name="${TF_VAR_ado_project_name:-azdo-bootstrap-${sub_suffix}}"
-
+  
   # Service connection names – match bootstrap.sh
   export TF_VAR_ado_github_service_connection_name="${TF_VAR_ado_github_service_connection_name:-github-pat}"
   export TF_VAR_ado_azure_service_connection_name="${TF_VAR_ado_azure_service_connection_name:-azdo-oidc-ci}"

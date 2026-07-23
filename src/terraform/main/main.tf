@@ -102,4 +102,7 @@ module "azure_devops" {
   tfstate_storage_account_name = var.state_storage_account_name
   tfstate_container_name       = var.state_container_name
   tfstate_key                  = "main/terraform/${var.environment}.tfstate"
+  tfstate_subscription_id = var.subscription_id
+  tfstate_tenant_id       = var.tenant_id
+  tfstate_client_id       = var.ado_client_id    # the CI service principal's client ID
 }

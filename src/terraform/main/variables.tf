@@ -142,3 +142,8 @@ variable "enable_validation_failures_alert" {
   type        = bool
   default     = false
 }
+
+variable "ado_client_id" {
+  description = "Azure DevOps CI service principal client ID (for remote state access)."
+  type        = string
+}
