@@ -65,3 +65,13 @@ variable "tfstate_key" {
   description = "State key for the main environment (e.g. main/terraform/staging.tfstate)."
   type        = string
 }
+
+variable "storage_account_name" {
+  description = "Data lake storage account name."
+  type        = string
+}
+
+variable "mlflow_tracking_uri" {
+  description = "MLflow tracking URI."
+  type        = string
+}

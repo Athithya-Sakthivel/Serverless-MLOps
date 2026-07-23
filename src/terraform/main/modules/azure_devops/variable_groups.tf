@@ -1,22 +1,3 @@
-# ------------------------------------------------------------------------------
-# ELT CI variable group – values are sourced from the main Terraform state.
-# ------------------------------------------------------------------------------
-data "terraform_remote_state" "main" {
-  backend = "azurerm"
-
-  config = {
-    resource_group_name  = var.tfstate_resource_group_name
-    storage_account_name = var.tfstate_storage_account_name
-    container_name       = var.tfstate_container_name
-    key                  = var.tfstate_key
-    use_azuread_auth     = true
-    use_oidc             = true
-    subscription_id      = var.tfstate_subscription_id
-    tenant_id            = var.tfstate_tenant_id
-    client_id            = var.tfstate_client_id
-  }
-}
-
 resource "azuredevops_variable_group" "elt_ci_vars" {
   project_id   = data.azuredevops_project.main.id
   name         = "elt-ci-vars"
@@ -25,12 +6,12 @@ resource "azuredevops_variable_group" "elt_ci_vars" {
 
   variable {
     name  = "AZURE_STORAGE_ACCOUNT_NAME"
-    value = data.terraform_remote_state.main.outputs.storage_account_name
+    value = var.storage_account_name
   }
 
   variable {
     name  = "MLFLOW_TRACKING_URI"
-    value = data.terraform_remote_state.main.outputs.mlflow_tracking_uri
+    value = var.mlflow_tracking_uri
   }
 
   variable {

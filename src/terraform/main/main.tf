@@ -105,4 +105,7 @@ module "azure_devops" {
   tfstate_subscription_id = var.subscription_id
   tfstate_tenant_id       = var.tenant_id
   tfstate_client_id       = var.ado_client_id    # the CI service principal's client ID
+
+  storage_account_name = module.state.storage_account_name
+  mlflow_tracking_uri  = module.ml_workspace.mlflow_tracking_uri
 }
