@@ -515,12 +515,14 @@ case "$MODE" in
     ;;
   --create)
     [[ -f "$VAR_FILE" ]] || fail "variable file not found: $VAR_FILE"
+
+    # Auto-import orphaned ACA resources first (before planning)
+    import_orphaned_aca
+
+    # Generate fresh plan after any imports
     run_plan
     log "refreshing Azure CLI token"
     az account get-access-token --resource https://management.azure.com > /dev/null 2>&1 || true
-
-    # Auto-import orphaned ACA resources from previous failed applies
-    import_orphaned_aca
 
     if $SKIP_ACA; then
       log "applying infrastructure only (skipping Container Apps)"
