@@ -27,6 +27,8 @@
 #  14. Every --create regenerates the plan from scratch (never reuses a stale plan).
 #  15. --skip-aca flag deploys everything except Container App/Job for slow
 #      subscriptions; a second --create completes the full deployment.
+#  16. Auto‑imports orphaned ACA resources from previous failed applies so
+#      that the pipeline is self‑healing.
 #
 # Local development (az login first):
 #   export TF_BACKEND_AUTH_MODE=cli
@@ -251,6 +253,8 @@ derive_names() {
   QUEUE_NAME="${project_abbr}trainqueue-${env_abbr}"
   SYSTEM_TOPIC_NAME="eg-${project_abbr}-${env_abbr}-storage"
   SUBSCRIPTION_NAME="eg-${project_abbr}-${env_abbr}-raw-monthly"
+  SERVE_APP_NAME="aca-serve-${env_abbr}"
+  TRAIN_JOB_NAME="acaj-train-${env_abbr}"
 }
 
 create_event_subscription() {
@@ -375,7 +379,31 @@ nuclear_destroy() {
 }
 
 # ---------------------------------------------------------------------------
-# 12. Argument parsing
+# 12. Auto-import orphaned ACA resources from previous failed applies
+# ---------------------------------------------------------------------------
+import_orphaned_aca() {
+  derive_names
+
+  local serve_id="/subscriptions/${TF_VAR_subscription_id}/resourceGroups/${RG_NAME}/providers/Microsoft.App/containerApps/${SERVE_APP_NAME}"
+  local job_id="/subscriptions/${TF_VAR_subscription_id}/resourceGroups/${RG_NAME}/providers/Microsoft.App/jobs/${TRAIN_JOB_NAME}"
+
+  if az containerapp show -g "$RG_NAME" -n "$SERVE_APP_NAME" --subscription "$TF_VAR_subscription_id" &>/dev/null; then
+    if ! tofu state list 2>/dev/null | grep -q "module.aca.azurerm_container_app.serve"; then
+      log "Importing orphaned Container App: $SERVE_APP_NAME"
+      tofu import -var-file="$VAR_FILE" module.aca.azurerm_container_app.serve "$serve_id" 2>/dev/null || true
+    fi
+  fi
+
+  if az containerapp job show -g "$RG_NAME" -n "$TRAIN_JOB_NAME" --subscription "$TF_VAR_subscription_id" &>/dev/null; then
+    if ! tofu state list 2>/dev/null | grep -q "module.aca.azurerm_container_app_job.train"; then
+      log "Importing orphaned Job: $TRAIN_JOB_NAME"
+      tofu import -var-file="$VAR_FILE" module.aca.azurerm_container_app_job.train "$job_id" 2>/dev/null || true
+    fi
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# 13. Argument parsing
 # ---------------------------------------------------------------------------
 MODE=""
 ENVIRONMENT=""
@@ -409,7 +437,7 @@ require_cmd curl
 require_cmd unzip
 
 # ---------------------------------------------------------------------------
-# 13. Auto‑derive Azure DevOps variables from subscription & git remote
+# 14. Auto‑derive Azure DevOps variables from subscription & git remote
 # ---------------------------------------------------------------------------
 resolve_git_remote() {
   command -v git >/dev/null 2>&1 || return 1
@@ -435,14 +463,10 @@ resolve_ado_vars() {
   local sub_suffix="${TF_VAR_subscription_id: -6}"
   
   export TF_VAR_ado_client_id="${TF_VAR_ado_client_id:-${ARM_CLIENT_ID:-}}"
-  # Project name – matches what bootstrap.sh creates
   export TF_VAR_ado_project_name="${TF_VAR_ado_project_name:-azdo-bootstrap-${sub_suffix}}"
-  
-  # Service connection names – match bootstrap.sh
   export TF_VAR_ado_github_service_connection_name="${TF_VAR_ado_github_service_connection_name:-github-pat}"
   export TF_VAR_ado_azure_service_connection_name="${TF_VAR_ado_azure_service_connection_name:-azdo-oidc-ci}"
 
-  # GitHub owner/repo – from git remote
   if resolve_git_remote; then
     export TF_VAR_github_owner="${TF_VAR_github_owner:-$GIT_OWNER}"
     export TF_VAR_github_repo="${TF_VAR_github_repo:-$GIT_REPO}"
@@ -450,23 +474,21 @@ resolve_ado_vars() {
     log "WARNING: unable to resolve git remote; GitHub owner/repo must be set via environment"
   fi
 
-  # State backend details – same as used by this script (from compute_defaults)
   export TF_VAR_state_rg_name="${TF_VAR_state_rg_name:-$TF_BACKEND_RESOURCE_GROUP}"
   export TF_VAR_state_storage_account_name="${TF_VAR_state_storage_account_name:-$TF_BACKEND_STORAGE_ACCOUNT}"
   export TF_VAR_state_container_name="${TF_VAR_state_container_name:-$TF_BACKEND_CONTAINER}"
 }
 
 # ---------------------------------------------------------------------------
-# 14. Execution order
+# 15. Execution order
 # ---------------------------------------------------------------------------
 load_bootstrap_env
 resolve_azure_context
 choose_auth_mode
 install_tofu_if_needed
 compute_defaults
-resolve_ado_vars          # sets all Azure DevOps module variables automatically
+resolve_ado_vars
 
-# ---- Make Azure DevOps credentials available to the provider ----------------
 if [[ -n "${TF_VAR_AZDO_ORG_SERVICE_URL:-}" ]]; then
   export AZDO_ORG_SERVICE_URL="$TF_VAR_AZDO_ORG_SERVICE_URL"
 elif [[ -n "${TF_VAR_ado_org_service_url:-}" ]]; then
@@ -478,20 +500,26 @@ if [[ -n "${TF_VAR_AZDO_PERSONAL_ACCESS_TOKEN:-}" ]]; then
 elif [[ -n "${TF_VAR_ado_personal_access_token:-}" ]]; then
   export AZDO_PERSONAL_ACCESS_TOKEN="$TF_VAR_ado_personal_access_token"
 fi
-# ---------------------------------------------------------------------------
 
 TF_BACKEND_KEY="${TF_BACKEND_KEY:-${TF_BACKEND_KEY_PREFIX}/${ENVIRONMENT}.tfstate}"
 PLAN_DIR="$SCRIPT_DIR/.plans/$ENVIRONMENT"
 PLAN_FILE="$PLAN_DIR/plan.tfplan"
 VAR_FILE="$SCRIPT_DIR/environments/${ENVIRONMENT}.tfvars"
+
+case "$MODE" in
+  --validate) prepare_stack ;;
+  --plan)
+    [[ -f "$VAR_FILE" ]] || fail "variable file not found: $VAR_FILE"
+    run_plan
+    log "plan written to $PLAN_FILE"
+    ;;
   --create)
     [[ -f "$VAR_FILE" ]] || fail "variable file not found: $VAR_FILE"
-    run_plan                              # always fresh plan (rm -f inside)
+    run_plan
     log "refreshing Azure CLI token"
     az account get-access-token --resource https://management.azure.com > /dev/null 2>&1 || true
 
     # Auto-import orphaned ACA resources from previous failed applies
-    derive_names
     import_orphaned_aca
 
     if $SKIP_ACA; then
