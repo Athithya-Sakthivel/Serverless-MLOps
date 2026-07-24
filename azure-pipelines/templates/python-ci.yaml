@@ -114,7 +114,6 @@ steps:
         "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
     displayName: 'Trivy filesystem scan'
 
-  # Optional Docker build – only when includeDocker is true
   - ${{ if eq(parameters.includeDocker, true) }}:
     - task: AzureCLI@2
       displayName: 'Authenticate Docker to ACR'
@@ -191,16 +190,26 @@ steps:
           MANIFEST_DIR="$(Build.ArtifactStagingDirectory)/deploy-manifest"
           mkdir -p "$MANIFEST_DIR"
           IMAGE_REFERENCE="$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE")"
-          python -c "
-import json, os
-manifest = {
-    'serviceName': '${{ parameters.containerRepository }}',
-    'imageReference': '${IMAGE_REFERENCE}',
-    'buildId': os.environ['BUILD_BUILDID'],
-}
-with open('$MANIFEST_DIR/deploy-manifest.json','w') as f:
-    json.dump(manifest, f, indent=2)
-"
+          export IMAGE_REFERENCE
+          export BUILD_ID="$(Build.BuildId)"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifest_dir = Path(os.environ["MANIFEST_DIR"])
+          manifest_dir.mkdir(parents=True, exist_ok=True)
+
+          manifest = {
+              "serviceName": "${{ parameters.containerRepository }}",
+              "imageReference": os.environ["IMAGE_REFERENCE"],
+              "buildId": os.environ["BUILD_ID"],
+          }
+
+          (manifest_dir / "deploy-manifest.json").write_text(json.dumps(manifest, indent=2))
+          PY
+      env:
+        MANIFEST_DIR: $(Build.ArtifactStagingDirectory)/deploy-manifest
       displayName: 'Push image and generate manifest'
 
     - task: PublishPipelineArtifact@1
@@ -209,4 +218,4 @@ with open('$MANIFEST_DIR/deploy-manifest.json','w') as f:
       inputs:
         targetPath: '$(Build.ArtifactStagingDirectory)/deploy-manifest'
         artifact: 'deploy-manifest'
-        artifactType: 'pipeline'
+        publishLocation: 'pipeline'

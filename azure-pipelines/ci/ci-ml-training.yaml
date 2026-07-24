@@ -19,10 +19,10 @@ pool:
   vmImage: ubuntu-24.04
 
 variables:
-  - group: 'ml-ci-vars'
+  - group: ml-ci-vars
 
 steps:
-  - template: azure-pipelines/templates/python-ci.yaml
+  - template: ../templates/python-ci.yaml
     parameters:
       serviceDirectory: 'src/workloads/train'
       pythonVersion: '3.11'

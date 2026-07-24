@@ -22,10 +22,10 @@ pool:
   vmImage: ubuntu-24.04
 
 variables:
-  - group: 'elt-ci-vars'
+  - group: elt-ci-vars
 
 steps:
-  - template: /azure-pipelines/templates/python-ci.yaml
+  - template: ../templates/python-ci.yaml
     parameters:
       serviceDirectory: 'src/workloads/training_pipeline'
       pythonVersion: '3.14'
