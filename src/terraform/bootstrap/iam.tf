@@ -153,6 +153,12 @@ resource "azurerm_role_assignment" "ci_containerapp_secrets" {
   principal_id       = azuread_service_principal.ci.object_id
 }
 
+# CI needs to read Entra ID applications during plan (for azuread_application data sources)
+resource "azuread_directory_role_assignment" "ci_directory_reader" {
+  role_id             = "88d8e3e3-8f55-4a1e-953a-9b9898b8876b" # Directory Readers
+  principal_object_id = azuread_service_principal.ci.object_id
+}
+
 # ------------------------------------------------------------------------------
 # Azure RBAC for CD
 # ------------------------------------------------------------------------------
