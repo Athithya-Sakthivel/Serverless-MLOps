@@ -519,7 +519,7 @@ case "$MODE" in
     # Auto-import orphaned ACA resources first (before planning)
     import_orphaned_aca
 
-    # Generate fresh plan after any imports
+    # Generate a fresh plan after any imports
     run_plan
     log "refreshing Azure CLI token"
     az account get-access-token --resource https://management.azure.com > /dev/null 2>&1 || true
