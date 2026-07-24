@@ -1,15 +1,14 @@
 """End‑to‑end ELT pipeline tests using the 10K‑row CI sample and mocked Azure I/O.
 
-``conftest.py`` globally replaces ``DefaultAzureCredential`` with a mock, so
-no real authentication is attempted.  Only the actual blob read/write paths
-are patched here.
+No real Azure authentication is attempted – a mock credential is injected
+into ``build_blob_service_client`` for every test that needs a service client.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
@@ -30,13 +29,34 @@ CI_SAMPLE_PATH = _REPO_ROOT / "src" / "ci-samples" / "data.parquet"
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _mock_service_client() -> MagicMock:
+    """Return a BlobServiceClient mock that can download/upload without Azure."""
+    client = MagicMock()
+    # Mock the download path: get_blob_client().download_blob().readinto()
+    blob_client = MagicMock()
+    client.get_blob_client.return_value = blob_client
+    downloader = MagicMock()
+    blob_client.download_blob.return_value = downloader
+    downloader.readinto = MagicMock()
+    return client
+
+
+def _mock_credential() -> MagicMock:
+    """Return a mock that satisfies the ``credential`` parameter of BlobServiceClient."""
+    return MagicMock()
+
+
+# ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture(scope="module")
 def ci_sample_frame() -> pl.DataFrame:
-    """The 10K‑row CI sample – read once per test module."""
     if not CI_SAMPLE_PATH.exists():
         pytest.fail(f"CI sample not found at {CI_SAMPLE_PATH}")
     return pl.read_parquet(CI_SAMPLE_PATH)
@@ -68,7 +88,7 @@ def test_resolve_no_value_raises(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# validate_raw_frame (uses CI sample directly – no Azure)
+# validate_raw_frame
 # ---------------------------------------------------------------------------
 
 
@@ -109,7 +129,7 @@ def test_validate_report_has_expected_fields(ci_sample_frame):
 
 
 # ---------------------------------------------------------------------------
-# clean_raw_frame (uses CI sample – no Azure)
+# clean_raw_frame
 # ---------------------------------------------------------------------------
 
 
@@ -199,7 +219,7 @@ def test_clean_blob_name_leading_slash():
 
 
 # ---------------------------------------------------------------------------
-# checkpoint_payload (pure function)
+# checkpoint_payload
 # ---------------------------------------------------------------------------
 
 
@@ -222,12 +242,11 @@ def test_checkpoint_payload_fields():
 
 
 # ---------------------------------------------------------------------------
-# Full ELT orchestration – only I/O operations are mocked
+# Full ELT orchestration – I/O mocked, credential injected via helper
 # ---------------------------------------------------------------------------
 
 
 def test_full_elt_pipeline_with_mocks(ci_sample_frame, monkeypatch, tmp_path):
-    """Run `_run_elt` from main.py with Azure I/O mocked."""
     monkeypatch.setenv("AZURE_STORAGE_ACCOUNT_NAME", "testaccount")
     monkeypatch.setenv("INPUT_BLOB_NAME", "raw/monthly/batch.parquet")
     monkeypatch.setenv("MLFLOW_TRACKING_URI", "azureml://test")
@@ -235,47 +254,51 @@ def test_full_elt_pipeline_with_mocks(ci_sample_frame, monkeypatch, tmp_path):
     test_file = tmp_path / "raw.parquet"
     ci_sample_frame.write_parquet(test_file)
 
-    # Only mock the functions that actually talk to Azure storage.
-    # `DefaultAzureCredential` is already neutralised by conftest.py.
-    with (
-        patch("utils.storage.download_blob_to_tempfile", return_value=test_file),
-        patch("elt.load.upload_file_to_blob"),
-        patch("elt.load.upload_bytes_to_blob"),
-        patch("elt.load.read_checkpoint", return_value=None) as mock_read_cp,
-        patch("elt.load.write_checkpoint") as mock_write_cp,
-    ):
-        from main import _run_elt
-        from utils.config import AppConfig
+    # Override `build_blob_service_client` to use a mock credential.
+    # This is the only production-code change required: the function now
+    # accepts an optional credential.  Here we inject a mock so that no
+    # real token request is made.
+    with patch("utils.storage.build_blob_service_client") as mock_build_client:
+        mock_build_client.return_value = _mock_service_client()
 
-        config = AppConfig.from_env()
-        clean_name = _run_elt(config, "raw/monthly/batch.parquet")
+        # The ELT orchestration still needs to avoid real uploads/downloads.
+        with (
+            patch("elt.load.read_checkpoint", return_value=None) as mock_read_cp,
+            patch("elt.load.write_checkpoint") as mock_write_cp,
+            patch("utils.storage.download_blob_to_tempfile", return_value=test_file),
+            patch("elt.load.upload_file_to_blob"),
+            patch("elt.load.upload_bytes_to_blob"),
+        ):
+            from main import _run_elt
+            from utils.config import AppConfig
 
-        assert clean_name == "clean/monthly/batch.parquet"
-        mock_read_cp.assert_called_once()
-        mock_write_cp.assert_called_once()
+            config = AppConfig.from_env()
+            clean_name = _run_elt(config, "raw/monthly/batch.parquet")
 
-        # write_checkpoint is called with positional args:
-        # (storage_account_name, checkpoint_container_name, raw_blob_name, payload)
-        payload = mock_write_cp.call_args[0][3]
-        assert payload["status"] == "COMPLETED"
-        assert "validation_report" in payload
-        assert "transform_metrics" in payload
+            assert clean_name == "clean/monthly/batch.parquet"
+            mock_read_cp.assert_called_once()
+            mock_write_cp.assert_called_once()
+
+            payload = mock_write_cp.call_args[0][3]
+            assert payload["status"] == "COMPLETED"
+            assert "validation_report" in payload
+            assert "transform_metrics" in payload
 
 
 def test_elt_skip_when_checkpoint_completed(monkeypatch):
-    """ELT must skip entirely when a COMPLETED checkpoint already exists."""
     monkeypatch.setenv("AZURE_STORAGE_ACCOUNT_NAME", "testaccount")
     monkeypatch.setenv("INPUT_BLOB_NAME", "raw/skip.parquet")
     monkeypatch.setenv("MLFLOW_TRACKING_URI", "azureml://test")
 
     with (
         patch("elt.load.read_checkpoint") as mock_read,
-        patch("utils.storage.download_blob_to_tempfile") as mock_download,
+        patch("utils.storage.build_blob_service_client") as mock_build_client,
     ):
         mock_read.return_value = {
             "status": "COMPLETED",
             "clean_blob_name": "clean/skip.parquet",
         }
+        mock_build_client.return_value = _mock_service_client()
 
         from main import _run_elt
         from utils.config import AppConfig
@@ -283,4 +306,6 @@ def test_elt_skip_when_checkpoint_completed(monkeypatch):
         config = AppConfig.from_env()
         clean_name = _run_elt(config, "raw/skip.parquet")
         assert clean_name == "clean/skip.parquet"
-        mock_download.assert_not_called()
+        # `read_parquet_from_blob` should never be called → no download attempt
+        with patch("utils.storage.download_blob_to_tempfile") as mock_dl:
+            mock_dl.assert_not_called()

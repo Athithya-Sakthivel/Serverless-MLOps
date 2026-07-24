@@ -6,6 +6,7 @@ import os
 import tempfile
 from pathlib import Path
 
+from azure.core.credentials import TokenCredential
 from azure.core.exceptions import (
     ClientAuthenticationError,
     HttpResponseError,
@@ -19,10 +20,20 @@ PARQUET_CONTENT_TYPE = "application/vnd.apache.parquet"
 JSON_CONTENT_TYPE = "application/json"
 
 
-def build_blob_service_client(storage_account_name: str) -> BlobServiceClient:
+def build_blob_service_client(
+    storage_account_name: str,
+    *,
+    credential: TokenCredential | None = None,
+) -> BlobServiceClient:
+    """Return a BlobServiceClient authenticated via DefaultAzureCredential.
+
+    A custom *credential* can be injected for testing.  If omitted the
+    default chained credential is used.
+    """
     if not storage_account_name:
         raise ValueError("storage_account_name is required")
-    credential = DefaultAzureCredential(exclude_interactive_browser_credential=True)
+    if credential is None:
+        credential = DefaultAzureCredential(exclude_interactive_browser_credential=True)
     return BlobServiceClient(
         account_url=f"https://{storage_account_name}.blob.core.windows.net",
         credential=credential,
@@ -30,6 +41,7 @@ def build_blob_service_client(storage_account_name: str) -> BlobServiceClient:
 
 
 def ensure_container(service_client: BlobServiceClient, container_name: str) -> None:
+    """Create container if it does not already exist."""
     if not container_name:
         raise ValueError("container_name is required")
     try:
@@ -39,6 +51,7 @@ def ensure_container(service_client: BlobServiceClient, container_name: str) -> 
 
 
 def blob_exists(service_client: BlobServiceClient, container_name: str, blob_name: str) -> bool:
+    """Check whether a blob exists."""
     try:
         return service_client.get_blob_client(container=container_name, blob=blob_name).exists()
     except HttpResponseError:
@@ -52,6 +65,7 @@ def download_blob_to_tempfile(
     blob_name: str,
     suffix: str = "",
 ) -> Path:
+    """Download a blob to a temporary file on disk."""
     if not container_name:
         raise ValueError("container_name is required")
     if not blob_name:
@@ -87,6 +101,7 @@ def upload_file_to_blob(
     content_type: str,
     overwrite: bool = True,
 ) -> None:
+    """Upload a local file to blob storage."""
     if not file_path.exists():
         raise FileNotFoundError(str(file_path))
     ensure_container(service_client, container_name)
@@ -109,6 +124,7 @@ def upload_bytes_to_blob(
     content_type: str,
     overwrite: bool = True,
 ) -> None:
+    """Upload bytes to blob storage."""
     ensure_container(service_client, container_name)
     container_client = service_client.get_container_client(container_name)
     container_client.upload_blob(
