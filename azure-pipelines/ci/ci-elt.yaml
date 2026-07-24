@@ -1,5 +1,7 @@
-# Trigger only when this workload or the shared Python template changes.
-# Keeping the path filter tight reduces unnecessary CI runs.
+# Trigger only when this workload or the shared Python CI template changes.
+# The path filter is intentionally tight so unrelated repo edits do not burn
+# CI minutes.
+
 trigger:
   batch: true
   branches:
@@ -14,8 +16,9 @@ trigger:
       - src/workloads/training_pipeline/requirements-ci.txt
       - azure-pipelines/ci/ci-elt.yaml
       - azure-pipelines/templates/python-ci.yaml
+      - src/scripts/python_ci.sh
 
-# PR validation should mirror the main branch trigger behavior.
+# PR validation mirrors the main branch trigger behavior.
 pr:
   branches:
     include:
@@ -24,16 +27,17 @@ pr:
 pool:
   vmImage: ubuntu-24.04
 
-# Variable groups keep secrets and environment-specific values out of YAML.
 variables:
   - group: elt-ci-vars
 
 steps:
-  # Absolute path from repo root ensures the template is always found.
   - template: /azure-pipelines/templates/python-ci.yaml
     parameters:
       serviceDirectory: 'src/workloads/training_pipeline'
       pythonVersion: '3.14'
       requirementsFile: 'src/workloads/training_pipeline/requirements-ci.txt'
+      # The ELT workload currently uses a single requirements file. Passing the
+      # same path for dev requirements is fine; the script deduplicates it so
+      # pip does not reinstall the same file twice.
       devRequirementsFile: 'src/workloads/training_pipeline/requirements-ci.txt'
       includeDocker: false

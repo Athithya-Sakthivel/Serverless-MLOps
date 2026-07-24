@@ -1,4 +1,6 @@
-# Trigger only when the training workload or shared Python template changes.
+# Trigger only when the training workload, shared Python CI template, or the
+# shared CI script changes.
+
 trigger:
   batch: true
   branches:
@@ -10,6 +12,7 @@ trigger:
       - src/workloads/train/**
       - azure-pipelines/ci/ci-ml-training.yaml
       - azure-pipelines/templates/python-ci.yaml
+      - src/scripts/python_ci.sh
 
 # PRs into main should be validated with the same template.
 pr:
@@ -33,11 +36,12 @@ steps:
       includeDocker: false
 
       # preTestSteps runs after lint/type-check but before pytest.
-      # This is where training can happen if you want model registration
-      # to be exercised before tests complete.
+      # Keep it for any training-specific smoke step you want to exercise
+      # during CI without duplicating the shared setup logic.
       preTestSteps:
         - bash: |
             set -euo pipefail
-            source .venv/bin/activate
+            "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" install-deps
+            source "$(Pipeline.Workspace)/.venv/bin/activate"
             python src/workloads/train/train.py
           displayName: 'Train model and register in MLflow'

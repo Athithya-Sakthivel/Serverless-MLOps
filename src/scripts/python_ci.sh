@@ -1,20 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# This script is intentionally split into named subcommands so the Azure
-# Pipeline YAML stays small and readable.
+# This script is the single execution layer for Python CI.
+# The pipeline YAML should do only orchestration:
+#   1. select Python,
+#   2. restore caches,
+#   3. call one of these subcommands.
 #
-# Each subcommand depends on environment variables injected by the pipeline.
-# That keeps the script reusable while avoiding hardcoded repo-specific paths.
+# The script is intentionally idempotent:
+#   - It reuses an existing virtualenv when the dependency signature matches.
+#   - It only rebuilds the virtualenv when requirements actually change.
+#   - It keeps pip's download cache separate from the virtualenv itself.
+#
+# That separation matters:
+#   - pip's cache saves network/download time.
+#   - the virtualenv cache saves package installation time.
+#   - together they remove the "install the world every run" penalty.
 
-ROOT_DIR="${BUILD_SOURCES_DIR:?BUILD_SOURCES_DIR is required}"
-ARTIFACT_STAGING_DIR="${BUILD_ARTIFACT_STAGING_DIR:?BUILD_ARTIFACT_STAGING_DIR is required}"
+ROOT_DIR="${BUILD_SOURCESDIRECTORY:?BUILD_SOURCESDIRECTORY is required}"
+ARTIFACT_STAGING_DIR="${BUILD_ARTIFACTSTAGINGDIRECTORY:?BUILD_ARTIFACTSTAGINGDIRECTORY is required}"
 PIPELINE_WORKSPACE="${PIPELINE_WORKSPACE:?PIPELINE_WORKSPACE is required}"
 SERVICE_DIRECTORY="${SERVICE_DIRECTORY:?SERVICE_DIRECTORY is required}"
 
 REQUIREMENTS_FILE="${REQUIREMENTS_FILE:-}"
 DEV_REQUIREMENTS_FILE="${DEV_REQUIREMENTS_FILE:-}"
-PYTHON_VERSION="${PYTHON_VERSION:-3.14}"
 
 SECURITY_DIR="${SECURITY_DIR:-${ARTIFACT_STAGING_DIR}/security}"
 TEST_RESULTS_FILE="${TEST_RESULTS_FILE:-${ROOT_DIR}/test-results.xml}"
@@ -23,10 +32,16 @@ CONTAINER_REGISTRY="${CONTAINER_REGISTRY:-}"
 CONTAINER_REPOSITORY="${CONTAINER_REPOSITORY:-}"
 DOCKERFILE_PATH="${DOCKERFILE_PATH:-}"
 
-BUILD_SOURCE_BRANCH="${BUILD_SOURCE_BRANCH:-}"
-BUILD_SOURCE_VERSION="${BUILD_SOURCE_VERSION:-}"
-BUILD_BUILD_ID="${BUILD_BUILD_ID:-}"
+BUILD_SOURCE_BRANCH="${BUILD_SOURCEBRANCH:-}"
+BUILD_SOURCE_VERSION="${BUILD_SOURCEVERSION:-}"
+BUILD_BUILD_ID="${BUILD_BUILDID:-}"
 MANIFEST_DIR="${MANIFEST_DIR:-${ARTIFACT_STAGING_DIR}/deploy-manifest}"
+
+# Keep caches outside the repository tree so the source checkout stays clean.
+# Cache@2 restores these directories after checkout, and the script uses the
+# same paths every time.
+PIP_CACHE_DIR="${PIP_CACHE_DIR:-${PIPELINE_WORKSPACE}/pip-cache}"
+VENV_DIR="${VENV_DIR:-${PIPELINE_WORKSPACE}/.venv}"
 
 die() {
   printf 'ERROR: %s\n' "$*" >&2
@@ -39,21 +54,66 @@ Usage: python_ci.sh <install-deps|ruff-lint|ruff-format|typecheck|run-tests|pip-
 EOF
 }
 
-activate_venv() {
-  local venv_activate="${ROOT_DIR}/.venv/bin/activate"
+require_file() {
+  local file_path="$1"
+  [[ -f "$file_path" ]] || die "Missing required file: ${file_path}"
+}
 
-  # The template creates the venv during install-deps.
-  # Later steps fail fast if that setup step was skipped or failed.
-  if [[ ! -f "$venv_activate" ]]; then
-    die "Virtual environment not found at ${ROOT_DIR}/.venv. Run install-deps first."
+# Return the full list of requirement files used by this job.
+# If dev requirements are the same file as runtime requirements, we only emit
+# the file once. That avoids duplicate pip args and duplicate hashing work.
+dependency_files() {
+  local base_requirements="${ROOT_DIR}/${REQUIREMENTS_FILE}"
+  require_file "${base_requirements}"
+  printf '%s\n' "${base_requirements}"
+
+  if [[ -n "${DEV_REQUIREMENTS_FILE}" && "${DEV_REQUIREMENTS_FILE}" != "${REQUIREMENTS_FILE}" ]]; then
+    local dev_requirements="${ROOT_DIR}/${DEV_REQUIREMENTS_FILE}"
+    require_file "${dev_requirements}"
+    printf '%s\n' "${dev_requirements}"
+  fi
+}
+
+# Build a stable digest over the actual contents of the dependency files.
+# This is the local runtime analogue of using file-path key segments in the
+# Azure cache key.
+dependency_signature() {
+  local -a files=()
+  mapfile -t files < <(dependency_files)
+
+  python - "${files[@]}" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+paths = []
+for raw_path in sys.argv[1:]:
+    path = pathlib.Path(raw_path)
+    if path not in paths:
+        paths.append(path)
+
+digest = hashlib.sha256()
+for path in paths:
+    digest.update(path.read_bytes())
+    digest.update(b"\0")
+
+print(digest.hexdigest())
+PY
+}
+
+activate_venv() {
+  local venv_activate="${VENV_DIR}/bin/activate"
+
+  if [[ ! -f "${venv_activate}" ]]; then
+    die "Virtual environment not found at ${VENV_DIR}. Run install-deps first."
   fi
 
   # shellcheck disable=SC1090
-  source "$venv_activate"
+  source "${venv_activate}"
 }
 
 ensure_trivy() {
-  # Trivy is downloaded on demand because hosted agents do not guarantee it.
+  # Trivy is fetched on demand because hosted agents do not guarantee it.
   if [[ -x /tmp/trivy ]]; then
     return
   fi
@@ -69,31 +129,60 @@ ensure_trivy() {
 }
 
 require_container_vars() {
-  # Docker-related subcommands need a registry, repository, and Dockerfile path.
-  [[ -n "$CONTAINER_REGISTRY" ]] || die "CONTAINER_REGISTRY is required for Docker operations."
-  [[ -n "$CONTAINER_REPOSITORY" ]] || die "CONTAINER_REPOSITORY is required for Docker operations."
-  [[ -n "$DOCKERFILE_PATH" ]] || die "DOCKERFILE_PATH is required for Docker operations."
+  [[ -n "${CONTAINER_REGISTRY}" ]] || die "CONTAINER_REGISTRY is required for Docker operations."
+  [[ -n "${CONTAINER_REPOSITORY}" ]] || die "CONTAINER_REPOSITORY is required for Docker operations."
+  [[ -n "${DOCKERFILE_PATH}" ]] || die "DOCKERFILE_PATH is required for Docker operations."
 }
 
 install_deps() {
-  [[ -n "$REQUIREMENTS_FILE" ]] || die "REQUIREMENTS_FILE is required."
-  [[ -n "$DEV_REQUIREMENTS_FILE" ]] || die "DEV_REQUIREMENTS_FILE is required."
+  [[ -n "${REQUIREMENTS_FILE}" ]] || die "REQUIREMENTS_FILE is required."
+  [[ -n "${DEV_REQUIREMENTS_FILE}" ]] || die "DEV_REQUIREMENTS_FILE is required."
 
-  mkdir -p "${PIPELINE_WORKSPACE}/.cache/pip"
+  mkdir -p "${PIP_CACHE_DIR}" "${VENV_DIR}"
 
-  # Create an isolated environment so dependency resolution is reproducible.
-  python -m venv "${ROOT_DIR}/.venv"
-  # shellcheck disable=SC1090
-  source "${ROOT_DIR}/.venv/bin/activate"
+  local signature_file="${VENV_DIR}/.dependency-signature"
+  local expected_signature
+  expected_signature="$(dependency_signature)"
 
-  python -m pip install --upgrade pip setuptools wheel
+  # Fast path:
+  # If a restored virtualenv already matches the current dependency signature,
+  # do not reinstall anything. Just validate the environment and stop.
+  if [[ -x "${VENV_DIR}/bin/python" && -f "${signature_file}" ]]; then
+    local cached_signature
+    cached_signature="$(tr -d '\n' < "${signature_file}")"
 
-  pip install --cache-dir "${PIPELINE_WORKSPACE}/.cache/pip" \
-    -r "${ROOT_DIR}/${REQUIREMENTS_FILE}" \
-    -r "${ROOT_DIR}/${DEV_REQUIREMENTS_FILE}"
+    if [[ "${cached_signature}" == "${expected_signature}" ]]; then
+      echo "Virtualenv matches dependency signature; skipping reinstall."
+      activate_venv
+      python -m pip check
+      return
+    fi
+  fi
 
-  # Validate that installed packages have consistent metadata.
+  # Slow path:
+  # The cache missed or requirements changed. Rebuild from scratch, but keep
+  # downloads in the pip cache so future installs are faster.
+  rm -rf "${VENV_DIR}"
+  python -m venv "${VENV_DIR}"
+  activate_venv
+
+  local -a pip_requirements=()
+  while IFS= read -r requirement_file; do
+    pip_requirements+=(-r "${requirement_file}")
+  done < <(dependency_files)
+
+  # We intentionally do not upgrade pip/setuptools/wheel on every run.
+  # Those upgrades add work every build while not changing the dependency graph.
+  # pip will still build wheels and manage build isolation when needed.
+  python -m pip install \
+    --disable-pip-version-check \
+    --no-input \
+    --prefer-binary \
+    --cache-dir "${PIP_CACHE_DIR}" \
+    "${pip_requirements[@]}"
+
   python -m pip check
+  printf '%s\n' "${expected_signature}" > "${signature_file}"
 }
 
 ruff_lint() {
@@ -150,13 +239,15 @@ build_image() {
   local context_dir="${ROOT_DIR}/${SERVICE_DIRECTORY}"
   local image="${CONTAINER_REGISTRY}.azurecr.io/${CONTAINER_REPOSITORY}:${BUILD_SOURCE_VERSION}"
 
-  # Use a dedicated buildx builder so the job does not depend on the host state.
+  # Use a dedicated builder so the job does not depend on host state.
   docker buildx rm ci-builder >/dev/null 2>&1 || true
   docker buildx create --name ci-builder --use >/dev/null
   docker buildx inspect --bootstrap >/dev/null
 
+  # Registry-backed cache is only used on main because that is where we
+  # authenticate and publish. That keeps feature branches simpler and avoids
+  # requiring registry write access for every branch build.
   if [[ "${BUILD_SOURCE_BRANCH}" == "refs/heads/main" ]]; then
-    # On main, publish and consume registry-backed cache layers.
     local cache_ref="${CONTAINER_REGISTRY}.azurecr.io/build-cache/${CONTAINER_REPOSITORY}:buildcache"
 
     docker buildx build \
@@ -201,8 +292,8 @@ scan_image() {
 push_image_and_manifest() {
   require_container_vars
 
-  [[ -n "$BUILD_BUILD_ID" ]] || die "BUILD_BUILD_ID is required."
-  [[ -n "$BUILD_SOURCE_VERSION" ]] || die "BUILD_SOURCE_VERSION is required."
+  [[ -n "${BUILD_BUILD_ID}" ]] || die "BUILD_BUILD_ID is required."
+  [[ -n "${BUILD_SOURCE_VERSION}" ]] || die "BUILD_SOURCE_VERSION is required."
 
   local image="${CONTAINER_REGISTRY}.azurecr.io/${CONTAINER_REPOSITORY}:${BUILD_SOURCE_VERSION}"
 
@@ -211,8 +302,8 @@ push_image_and_manifest() {
 
   mkdir -p "${MANIFEST_DIR}"
 
-  # Try to get the digest from local Docker metadata first.
-  # If the digest is absent, query ACR and resolve it from the pushed tag.
+  # Try the local Docker metadata first. If that is unavailable, fall back to
+  # ACR and resolve the digest from the pushed tag.
   local local_digest=""
   local_digest="$(docker image inspect "${image}" --format '{{index .RepoDigests 0}}' 2>/dev/null || true)"
 
