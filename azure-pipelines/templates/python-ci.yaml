@@ -1,22 +1,38 @@
+# Reusable CI template for Python services.
+# This template covers:
+# - Python setup
+# - pip caching
+# - dependency installation
+# - lint / format / type-check
+# - tests
+# - security scans
+# - optional Docker build / scan / push / manifest publication
 parameters:
   - name: serviceDirectory
     type: string
+
   - name: pythonVersion
     type: string
     default: '3.14'
+
   - name: requirementsFile
     type: string
+
   - name: devRequirementsFile
     type: string
+
   - name: includeDocker
     type: boolean
     default: false
+
   - name: containerRepository
     type: string
     default: ''
+
   - name: dockerfilePath
     type: string
     default: ''
+
   - name: preTestSteps
     type: stepList
     default: []
@@ -35,9 +51,9 @@ steps:
   - task: Cache@2
     displayName: 'Cache pip'
     inputs:
-      key: 'pip | "$(Agent.OS)" | ${{ parameters.pythonVersion }} | ${{ parameters.requirementsFile }} | ${{ parameters.devRequirementsFile }}'
+      key: 'pip | "$(Agent.OS)" | "python-${{ parameters.pythonVersion }}" | ${{ parameters.requirementsFile }} | ${{ parameters.devRequirementsFile }}'
       restoreKeys: |
-        pip | "$(Agent.OS)" | ${{ parameters.pythonVersion }}
+        pip | "$(Agent.OS)" | "python-${{ parameters.pythonVersion }}"
         pip | "$(Agent.OS)"
       path: '$(Pipeline.Workspace)/.cache/pip'
 
@@ -89,6 +105,7 @@ steps:
     inputs:
       testResultsFormat: 'JUnit'
       testResultsFiles: 'test-results.xml'
+      searchFolder: '$(Build.SourcesDirectory)'
       testRunTitle: '${{ parameters.serviceDirectory }} tests'
 
   - bash: |
@@ -102,9 +119,11 @@ steps:
       set -euo pipefail
       mkdir -p "$(Build.ArtifactStagingDirectory)/security"
       TRIVY_VERSION='0.72.0'
-      curl -fsSL -o /tmp/trivy.tar.gz \
+      curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 \
+        -o /tmp/trivy.tar.gz \
         "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
       tar -xzf /tmp/trivy.tar.gz -C /tmp trivy
+      chmod +x /tmp/trivy
       /tmp/trivy fs \
         --scanners vuln \
         --format sarif \
@@ -120,7 +139,6 @@ steps:
       condition: eq(variables['Build.SourceBranch'], 'refs/heads/main')
       inputs:
         azureSubscription: 'azdo-oidc-ci'
-        addSpnToEnvironment: true
         scriptType: 'bash'
         scriptLocation: 'inlineScript'
         inlineScript: |
@@ -133,11 +151,9 @@ steps:
         ROOT="$(Build.SourcesDirectory)"
         CONTEXT="$ROOT/${{ parameters.serviceDirectory }}"
         IMAGE="$(containerRegistry).azurecr.io/${{ parameters.containerRepository }}:$(Build.SourceVersion)"
-
         docker buildx rm ci-builder >/dev/null 2>&1 || true
         docker buildx create --name ci-builder --use >/dev/null
         docker buildx inspect --bootstrap >/dev/null
-
         if [ "${BUILD_SOURCEBRANCH}" = "refs/heads/main" ]; then
           CACHE_REF="$(containerRegistry).azurecr.io/build-cache/${{ parameters.containerRepository }}:buildcache"
           docker buildx build \
@@ -180,36 +196,58 @@ steps:
       condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
       inputs:
         azureSubscription: 'azdo-oidc-ci'
-        addSpnToEnvironment: true
         scriptType: 'bash'
         scriptLocation: 'inlineScript'
         inlineScript: |
           set -euo pipefail
-          IMAGE="$(containerRegistry).azurecr.io/${{ parameters.containerRepository }}:$(Build.SourceVersion)"
-          az acr login --name "$(containerRegistry)"
+          REGISTRY_NAME="$(containerRegistry)"
+          REPOSITORY='${{ parameters.containerRepository }}'
+          IMAGE_TAG='$(Build.SourceVersion)'
+          IMAGE="${REGISTRY_NAME}.azurecr.io/${REPOSITORY}:${IMAGE_TAG}"
+          az acr login --name "$REGISTRY_NAME"
           docker push "$IMAGE"
-
           export MANIFEST_DIR="$(Build.ArtifactStagingDirectory)/deploy-manifest"
           mkdir -p "$MANIFEST_DIR"
-          IMAGE_REFERENCE="$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE")"
+          LOCAL_DIGEST="$(docker image inspect "$IMAGE" --format '{{index .RepoDigests 0}}' 2>/dev/null || true)"
+          if [ -n "$LOCAL_DIGEST" ]; then
+            IMAGE_REFERENCE="$LOCAL_DIGEST"
+          else
+            MANIFEST_JSON="$(az acr repository show-manifests \
+              --name "$REGISTRY_NAME" \
+              --repository "$REPOSITORY" \
+              --output json)"
+            export MANIFEST_JSON IMAGE_TAG
+            DIGEST="$(python - <<'PY'
+import json
+import os
+manifests = json.loads(os.environ["MANIFEST_JSON"])
+image_tag = os.environ["IMAGE_TAG"]
+for manifest in manifests:
+    if image_tag in (manifest.get("tags") or []):
+        print(manifest["digest"])
+        break
+else:
+    raise SystemExit("Could not resolve pushed image digest from ACR")
+PY
+)"
+            IMAGE_REFERENCE="${REGISTRY_NAME}.azurecr.io/${REPOSITORY}@${DIGEST}"
+          fi
           export IMAGE_REFERENCE
           export BUILD_ID="$(Build.BuildId)"
           python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          manifest_dir = Path(os.environ["MANIFEST_DIR"])
-          manifest_dir.mkdir(parents=True, exist_ok=True)
-
-          manifest = {
-              "serviceName": "${{ parameters.containerRepository }}",
-              "imageReference": os.environ["IMAGE_REFERENCE"],
-              "buildId": os.environ["BUILD_ID"],
-          }
-
-          (manifest_dir / "deploy-manifest.json").write_text(json.dumps(manifest, indent=2))
-          PY
+import json
+import os
+from pathlib import Path
+manifest_dir = Path(os.environ["MANIFEST_DIR"])
+manifest_dir.mkdir(parents=True, exist_ok=True)
+manifest = {
+    "serviceName": "${{ parameters.containerRepository }}",
+    "imageReference": os.environ["IMAGE_REFERENCE"],
+    "buildId": os.environ["BUILD_ID"],
+}
+(manifest_dir / "deploy-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+PY
+      displayName: 'Push image and generate manifest'
 
     - task: PublishPipelineArtifact@1
       displayName: 'Publish deploy manifest'

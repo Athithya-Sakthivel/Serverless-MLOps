@@ -1,3 +1,5 @@
+# Trigger only when this workload or the shared Python template changes.
+# Keeping the path filter tight reduces unnecessary CI runs.
 trigger:
   batch: true
   branches:
@@ -13,6 +15,7 @@ trigger:
       - azure-pipelines/ci/ci-elt.yaml
       - azure-pipelines/templates/python-ci.yaml
 
+# PR validation should mirror the main branch trigger behavior.
 pr:
   branches:
     include:
@@ -21,11 +24,13 @@ pr:
 pool:
   vmImage: ubuntu-24.04
 
+# Variable groups keep secrets and environment-specific values out of YAML.
 variables:
   - group: elt-ci-vars
 
 steps:
-  - template: ../templates/python-ci.yaml
+  # Absolute path from repo root ensures the template is always found.
+  - template: /azure-pipelines/templates/python-ci.yaml
     parameters:
       serviceDirectory: 'src/workloads/training_pipeline'
       pythonVersion: '3.14'
