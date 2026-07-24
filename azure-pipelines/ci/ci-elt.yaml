@@ -25,7 +25,7 @@ variables:
   - group: 'elt-ci-vars'
 
 steps:
-  - template: azure-pipelines/templates/python-ci.yaml
+  - template: /azure-pipelines/templates/python-ci.yaml
     parameters:
       serviceDirectory: 'src/workloads/training_pipeline'
       pythonVersion: '3.14'
