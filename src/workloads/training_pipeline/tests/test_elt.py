@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -11,7 +9,12 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# Make the training_pipeline package importable without installation
+_HERE = Path(__file__).resolve()
+_PACKAGE_ROOT = _HERE.parent.parent  # src/workloads/training_pipeline
+import sys
+
+sys.path.insert(0, str(_PACKAGE_ROOT))
 
 from elt.extract import resolve_input_blob_name
 from elt.load import checkpoint_payload, clean_blob_name
@@ -19,9 +22,9 @@ from elt.transform import clean_raw_frame
 from elt.validate import ValidationError, validate_raw_frame
 
 # ---------------------------------------------------------------------------
-# Path to the CI sample
+# Path to the CI sample – repo root is five levels up from this file
 # ---------------------------------------------------------------------------
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent  # back to repo root
+_REPO_ROOT = _HERE.parents[4]  # repository root (contains src/)
 CI_SAMPLE_PATH = _REPO_ROOT / "src" / "ci-samples" / "data.parquet"
 
 
@@ -56,9 +59,9 @@ def test_resolve_from_env(monkeypatch):
     assert resolve_input_blob_name() == "from_env.parquet"
 
 
-def test_resolve_no_value_raises():
+def test_resolve_no_value_raises(monkeypatch):
     for var in ("INPUT_BLOB_NAME", "RAW_BLOB_NAME", "EVENT_GRID_BLOB_NAME"):
-        os.environ.pop(var, None)
+        monkeypatch.delenv(var, raising=False)
     with pytest.raises(ValueError, match="Input blob name is required"):
         resolve_input_blob_name()
 
@@ -69,12 +72,10 @@ def test_resolve_no_value_raises():
 
 
 def test_validate_passes_ci_sample(ci_sample_frame):
-    """CI sample must pass validation without errors."""
     report = validate_raw_frame(ci_sample_frame)
     assert report.row_count == ci_sample_frame.height
     assert report.row_count > 0
-    # The sample should be clean enough that these rates are zero or very low
-    assert report.duplicate_rate < 0.05  # generous upper bound
+    assert report.duplicate_rate < 0.05
 
 
 def test_validate_empty_frame():
@@ -90,7 +91,6 @@ def test_validate_missing_column_raises(ci_sample_frame):
 
 
 def test_validate_null_rate_exceeded(ci_sample_frame):
-    """Artificially null out PINCP in all rows to trigger null‑rate failure."""
     df = ci_sample_frame.with_columns(pl.lit(None).cast(pl.Float64).alias("PINCP"))
     with pytest.raises(ValidationError, match="Null rate for PINCP"):
         validate_raw_frame(df)
@@ -104,7 +104,6 @@ def test_validate_report_has_expected_fields(ci_sample_frame):
     assert isinstance(report.invalid_state_rows, int)
     assert isinstance(report.warnings, tuple)
     assert isinstance(report.null_counts, dict)
-    # STATE should have zero nulls (max_null_rate=0.0)
     assert report.null_counts.get("STATE", 0) == 0
 
 
@@ -114,7 +113,6 @@ def test_validate_report_has_expected_fields(ci_sample_frame):
 
 
 def test_clean_preserves_reasonable_row_count(ci_sample_frame):
-    """Cleaning should not drop more than a small fraction of the sample."""
     clean, metrics = clean_raw_frame(ci_sample_frame)
     retention = metrics.output_rows / metrics.input_rows
     assert retention > 0.90, f"Retention rate {retention:.2%} too low"
@@ -122,7 +120,6 @@ def test_clean_preserves_reasonable_row_count(ci_sample_frame):
 
 
 def test_clean_output_schema_is_consistent(ci_sample_frame):
-    """All required columns present with correct types after cleaning."""
     clean, _ = clean_raw_frame(ci_sample_frame)
     assert "AGEP" in clean.columns
     assert clean.schema["AGEP"] == pl.Float64
@@ -132,14 +129,12 @@ def test_clean_output_schema_is_consistent(ci_sample_frame):
 
 
 def test_clean_with_validation_report(ci_sample_frame):
-    """ValidationReport warnings propagate into TransformMetrics."""
     report = validate_raw_frame(ci_sample_frame)
     _, metrics = clean_raw_frame(ci_sample_frame, validation_report=report)
     assert metrics.warnings == report.warnings
 
 
 def test_clean_removes_null_rows():
-    """Manual frame with a null in PINCP – that row must be dropped."""
     df = pl.DataFrame(
         {
             "AGEP": [30, 40, 50],
@@ -154,7 +149,7 @@ def test_clean_removes_null_rows():
             "RAC1P": [1, 2, 1],
             "STATE": ["NY", "CA", "TX"],
             "YEAR": [2024, 2023, 2025],
-            "PINCP": [60000, None, 120000],  # middle row has null
+            "PINCP": [60000, None, 120000],
         }
     )
     clean, metrics = clean_raw_frame(df)
@@ -231,12 +226,10 @@ def test_checkpoint_payload_fields():
 
 
 def test_full_elt_pipeline_with_mocks(ci_sample_frame, monkeypatch, tmp_path):
-    """Run the ELT orchestration end‑to‑end using mocked Azure calls."""
     monkeypatch.setenv("AZURE_STORAGE_ACCOUNT_NAME", "testaccount")
     monkeypatch.setenv("INPUT_BLOB_NAME", "raw/monthly/batch.parquet")
     monkeypatch.setenv("MLFLOW_TRACKING_URI", "azureml://test")
 
-    # Write sample to a temp parquet so the mock download "returns" it
     test_file = tmp_path / "raw.parquet"
     ci_sample_frame.write_parquet(test_file)
 
@@ -261,15 +254,13 @@ def test_full_elt_pipeline_with_mocks(ci_sample_frame, monkeypatch, tmp_path):
         mock_read_cp.assert_called_once()
         mock_write_cp.assert_called_once()
 
-        # Inspect the checkpoint payload written
-        payload = mock_write_cp.call_args[0][3]  # positional arg: payload
+        payload = mock_write_cp.call_args[0][3]
         assert payload["status"] == "COMPLETED"
         assert "validation_report" in payload
         assert "transform_metrics" in payload
 
 
 def test_elt_skip_when_checkpoint_completed(monkeypatch):
-    """ELT must skip entirely when a COMPLETED checkpoint exists."""
     monkeypatch.setenv("AZURE_STORAGE_ACCOUNT_NAME", "testaccount")
     monkeypatch.setenv("INPUT_BLOB_NAME", "raw/skip.parquet")
     monkeypatch.setenv("MLFLOW_TRACKING_URI", "azureml://test")
