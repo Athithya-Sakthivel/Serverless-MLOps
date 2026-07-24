@@ -25,6 +25,8 @@
 #  13. Azure DevOps provider credentials are mapped from TF_VAR_AZDO_* to plain
 #      env vars so the provider block works without hardcoding.
 #  14. Every --create regenerates the plan from scratch (never reuses a stale plan).
+#  15. --skip-aca flag deploys everything except Container App/Job for slow
+#      subscriptions; a second --create completes the full deployment.
 #
 # Local development (az login first):
 #   export TF_BACKEND_AUTH_MODE=cli
@@ -34,6 +36,7 @@
 #
 # CI/CD (Azure DevOps with OIDC service connection):
 #   bash src/terraform/main/run.sh --plan  --env staging
+#   bash src/terraform/main/run.sh --create --env staging --skip-aca
 #   bash src/terraform/main/run.sh --create --env staging
 # ==============================================================================
 
@@ -53,11 +56,13 @@ require_cmd() { command -v "$1" >/dev/null 2>&1 || fail "$1 missing"; }
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  run.sh --plan --env <prod|staging>
-  run.sh --create --env <prod|staging>
+  run.sh --plan --env <prod|staging> [--skip-aca]
+  run.sh --create --env <prod|staging> [--skip-aca]
   run.sh --apply-plan <plan-file> --env <prod|staging>
   run.sh --validate --env <prod|staging>
   run.sh --destroy --env <prod|staging> --yes-delete
+
+  --skip-aca  Deploy all infrastructure except Container Apps (for slow subs).
 USAGE
   exit 2
 }
@@ -376,6 +381,7 @@ MODE=""
 ENVIRONMENT=""
 PLAN_FILE_INPUT=""
 YES_DELETE=false
+SKIP_ACA=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -388,6 +394,8 @@ while [[ $# -gt 0 ]]; do
       ENVIRONMENT="${2:-}"; [[ -n "$ENVIRONMENT" ]] || usage; shift 2 ;;
     --yes-delete)
       YES_DELETE=true; shift ;;
+    --skip-aca)
+      SKIP_ACA=true; shift ;;
     *) usage ;;
   esac
 done
@@ -459,9 +467,6 @@ compute_defaults
 resolve_ado_vars          # sets all Azure DevOps module variables automatically
 
 # ---- Make Azure DevOps credentials available to the provider ----------------
-# The azuredevops provider in providers.tf expects plain environment
-# variables AZDO_ORG_SERVICE_URL and AZDO_PERSONAL_ACCESS_TOKEN.
-# We map them from the TF_VAR_* equivalents that the user already has.
 if [[ -n "${TF_VAR_AZDO_ORG_SERVICE_URL:-}" ]]; then
   export AZDO_ORG_SERVICE_URL="$TF_VAR_AZDO_ORG_SERVICE_URL"
 elif [[ -n "${TF_VAR_ado_org_service_url:-}" ]]; then
@@ -492,11 +497,23 @@ case "$MODE" in
     run_plan                              # always fresh plan (rm -f inside)
     log "refreshing Azure CLI token"
     az account get-access-token --resource https://management.azure.com > /dev/null 2>&1 || true
-    log "applying fresh plan $PLAN_FILE"
-    tofu apply -input=false -lock-timeout=5m -auto-approve "$PLAN_FILE"
 
-    log "wiring Event Grid subscription"
-    create_event_subscription || log "Event Subscription creation failed; check logs"
+    if $SKIP_ACA; then
+      log "applying infrastructure only (skipping Container Apps)"
+      tofu apply -input=false -lock-timeout=5m -auto-approve \
+        -target=module.state \
+        -target=module.observability \
+        -target=module.ml_workspace \
+        -target=module.eventing \
+        -target=module.azure_devops \
+        "$PLAN_FILE"
+    else
+      log "applying full plan $PLAN_FILE"
+      tofu apply -input=false -lock-timeout=5m -auto-approve "$PLAN_FILE"
+
+      log "wiring Event Grid subscription"
+      create_event_subscription || log "Event Subscription creation failed; check logs"
+    fi
     ;;
   --apply-plan) run_apply_plan ;;
   --destroy)
