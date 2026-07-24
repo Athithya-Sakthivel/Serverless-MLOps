@@ -33,5 +33,5 @@ steps:
         - bash: |
             set -euo pipefail
             source .venv/bin/activate
-            python src/workloads/train/train.py    # runs training + registers model in MLflow
+            python src/workloads/train/train.py
           displayName: 'Train model and register in MLflow'
