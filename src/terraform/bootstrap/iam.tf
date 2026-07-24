@@ -138,3 +138,12 @@ resource "azurerm_role_assignment" "cd_tfstate" {
   role_definition_name = "Storage Blob Data Contributor"
   principal_id        = azuread_service_principal.cd.object_id
 }
+
+resource "azuread_directory_role" "application_administrator" {
+  display_name = "Application Administrator"
+}
+
+resource "azuread_directory_role_assignment" "cd_app_admin" {
+  role_id             = azuread_directory_role.application_administrator.template_id
+  principal_object_id = azuread_service_principal.cd.object_id
+}
