@@ -21,7 +21,7 @@ resource "azuredevops_variable_group" "terraform_vars" {
     value = var.alert_email_address
   }
 
-  # ---------- Azure DevOps provider credentials (used by run.sh) --------------
+  # ---------- Azure DevOps provider credentials (used by main/run.sh) --------------
   variable {
     name  = "AZDO_ORG_SERVICE_URL"
     value = var.AZDO_ORG_SERVICE_URL

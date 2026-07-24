@@ -1,3 +1,37 @@
+# ==============================================================================
+# CD Pipeline – Terraform Apply (Staging)
+# ==============================================================================
+# Triggered automatically when the CI pipeline (terraform-ci) succeeds on main.
+# Deploys the full infrastructure to the staging environment.
+# 
+# Bugs encountered & fixed:
+#   1. ExpiredAuthenticationToken on long-running applies (20+ min).
+#      → Switched to OIDC (ARM_USE_OIDC=true). The Azure SDK auto-refreshes
+#        tokens for OIDC service connections, no manual refresh needed.
+#   2. Container Apps failed with ContainerAppOperationError: Operation expired
+#      because the Azure for Students subscription throttles compute creation.
+#      → Added --skip-aca flag to run.sh. First deploy infrastructure-only,
+#        then a second deploy with Container Apps (environment is warm).
+#      → In the pipeline, we run TWO ./run.sh commands:
+#          a) --create --skip-aca  (infrastructure only)
+#          b) --create             (full deploy – ACA succeeds because warm)
+#   3. Orphaned Container App/Job resources from previous failed applies
+#      caused "resource already exists" errors.
+#      → run.sh now auto-imports orphaned ACA resources before planning,
+#        making the pipeline self-healing.
+#   4. Scheduled Query Rules failed with "insufficient access" on the
+#      student subscription.
+#      → Removed alert rules entirely from alerts.tf (only action group remains).
+#   5. CD service principal (azdo-oidc-cd) couldn't create Entra ID app
+#      registrations for the serving endpoint (403 Forbidden).
+#      → Added Application Administrator directory role assignment to the
+#        CD service principal in bootstrap/iam.tf.
+#   6. CD service principal couldn't list storage account keys to read
+#      remote state.
+#      → Changed the terraform_remote_state data source to use
+#        use_azuread_auth=true instead of access keys.
+# ==============================================================================
+
 trigger: none
 
 resources:
@@ -25,8 +59,14 @@ jobs:
               clean: true
               fetchDepth: 1
 
+            # ---------------------------------------------------------------
+            # Phase 1: Deploy everything EXCEPT Container Apps.
+            # This ensures the Container App Environment is provisioned and
+            # warm before Phase 2, avoiding the "Operation expired" timeout
+            # on student subscriptions.
+            # ---------------------------------------------------------------
             - task: AzureCLI@2
-              displayName: 'Run Terraform plan & apply'
+              displayName: 'Phase 1 – Infrastructure (skip ACA)'
               inputs:
                 azureSubscription: 'azdo-oidc-cd'
                 addSpnToEnvironment: true
@@ -34,7 +74,37 @@ jobs:
                 scriptLocation: inlineScript
                 inlineScript: |
                   set -euo pipefail
+                  cd "$(Build.SourcesDirectory)/src/terraform/main"
+                  chmod +x ./run.sh
 
+                  export ARM_CLIENT_ID="${servicePrincipalId}"
+                  export ARM_TENANT_ID="${tenantId}"
+                  export ARM_OIDC_TOKEN="${idToken}"
+                  export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+                  export ARM_USE_OIDC="true"
+                  export TF_IN_AUTOMATION="true"
+
+                  ./run.sh --create --env staging --skip-aca
+                env:
+                  AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
+                  AZDO_PERSONAL_ACCESS_TOKEN: $(AZDO_PERSONAL_ACCESS_TOKEN)
+
+            # ---------------------------------------------------------------
+            # Phase 2: Full deploy including Container Apps.
+            # The environment is now warm, so ACA provisioning finishes
+            # within the Azure platform timeout.
+            # run.sh auto-imports any orphaned ACA resources from Phase 1
+            # failures, making this step self-healing.
+            # ---------------------------------------------------------------
+            - task: AzureCLI@2
+              displayName: 'Phase 2 – Full deploy with ACA'
+              inputs:
+                azureSubscription: 'azdo-oidc-cd'
+                addSpnToEnvironment: true
+                scriptType: bash
+                scriptLocation: inlineScript
+                inlineScript: |
+                  set -euo pipefail
                   cd "$(Build.SourcesDirectory)/src/terraform/main"
                   chmod +x ./run.sh
 
@@ -46,6 +116,8 @@ jobs:
                   export TF_IN_AUTOMATION="true"
 
                   ./run.sh --create --env staging
-              env:
-                AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
-                AZDO_PERSONAL_ACCESS_TOKEN: $(AZDO_PERSONAL_ACCESS_TOKEN)
+                env:
+                    # Explicitly inject Azure DevOps provider credentials.
+                    # Secret variables from variable groups are NOT auto-exported.
+                  AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
+                  AZDO_PERSONAL_ACCESS_TOKEN: $(AZDO_PERSONAL_ACCESS_TOKEN)

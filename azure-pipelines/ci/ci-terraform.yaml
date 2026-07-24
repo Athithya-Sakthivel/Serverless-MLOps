@@ -1,3 +1,26 @@
+# ==============================================================================
+# CI Pipeline – Terraform Plan & Validate
+# ==============================================================================
+# Triggers on pushes to main/feat/* that touch src/terraform/main/ or this file.
+# Runs `tofu plan` only – does NOT apply. Publishes the plan artifact for CD.
+#
+# Bugs encountered & fixed:
+#   1. TF_VAR_location and TF_VAR_alert_email_address were hardcoded inline.
+#      → Moved to the 'terraform-vars' variable group (created by bootstrap).
+#   2. The azuredevops provider in the azure_devops module failed with
+#      "You are not authorized to access Azure DevOps Organization".
+#      → Added AZDO_ORG_SERVICE_URL and AZDO_PERSONAL_ACCESS_TOKEN as secret
+#        variables in the variable group, injected via the task's env: block.
+#   3. Secret variables from a variable group are NOT automatically available
+#      as environment variables – they must be explicitly passed via env: or
+#      $(VAR_NAME) macro expansion.
+#      → Added the env: block on the AzureCLI@2 task.
+#   4. A plan artifact from a previous commit was reused, causing stale plan
+#      errors in CD when the state changed.
+#      → CD now runs its own `--create` (plan + apply) instead of applying
+#        the CI artifact. The artifact is published for audit only.
+# ==============================================================================
+
 trigger:
   batch: true
   branches:
@@ -17,6 +40,13 @@ pr:
 pool:
   vmImage: ubuntu-24.04
 
+# ---------------------------------------------------------------------------
+# Variable group 'terraform-vars' (created by bootstrap) provides:
+#   TF_VAR_location
+#   TF_VAR_alert_email_address
+#   AZDO_ORG_SERVICE_URL
+#   AZDO_PERSONAL_ACCESS_TOKEN   (secret)
+# ---------------------------------------------------------------------------
 variables:
   - group: terraform-vars
 
@@ -28,6 +58,10 @@ steps:
   - task: AzureCLI@2
     displayName: 'Terraform plan'
     inputs:
+      # Uses the CI service connection (azdo-oidc-ci) which has:
+      #  - Reader on subscription
+      #  - AcrPush on subscription
+      #  - Storage Blob Data Contributor on subscription (for remote state)
       azureSubscription: 'azdo-oidc-ci'
       addSpnToEnvironment: true
       scriptType: bash
@@ -37,6 +71,7 @@ steps:
         cd "$(Build.SourcesDirectory)/src/terraform/main"
         chmod +x ./run.sh
 
+        # OIDC credentials injected by AzureCLI task
         export ARM_CLIENT_ID="$servicePrincipalId"
         export ARM_TENANT_ID="$tenantId"
         export ARM_OIDC_TOKEN="$idToken"
@@ -44,13 +79,20 @@ steps:
         export ARM_USE_OIDC="true"
         export TF_INPUT="false"
 
+        # TF_VAR_location and TF_VAR_alert_email_address come from
+        # the variable group. AZDO_ORG_SERVICE_URL and
+        # AZDO_PERSONAL_ACCESS_TOKEN are passed via the env: block below.
         ./run.sh --plan --env staging
     env:
+      # Explicitly inject Azure DevOps provider credentials.
+      # Secret variables from variable groups are NOT auto-exported.
       AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
       AZDO_PERSONAL_ACCESS_TOKEN: $(AZDO_PERSONAL_ACCESS_TOKEN)
 
+  # Published for audit/rollback purposes only.
+  # CD does NOT use this artifact – it runs its own plan+apply.
   - task: PublishPipelineArtifact@1
-    displayName: 'Publish Terraform plan'
+    displayName: 'Publish Terraform plan (audit only)'
     inputs:
       targetPath: '$(Build.SourcesDirectory)/src/terraform/main/.plans/staging'
       artifact: 'terraform-plan'
