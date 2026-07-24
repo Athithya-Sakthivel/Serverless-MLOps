@@ -484,19 +484,15 @@ TF_BACKEND_KEY="${TF_BACKEND_KEY:-${TF_BACKEND_KEY_PREFIX}/${ENVIRONMENT}.tfstat
 PLAN_DIR="$SCRIPT_DIR/.plans/$ENVIRONMENT"
 PLAN_FILE="$PLAN_DIR/plan.tfplan"
 VAR_FILE="$SCRIPT_DIR/environments/${ENVIRONMENT}.tfvars"
-
-case "$MODE" in
-  --validate) prepare_stack ;;
-  --plan)
-    [[ -f "$VAR_FILE" ]] || fail "variable file not found: $VAR_FILE"
-    run_plan
-    log "plan written to $PLAN_FILE"
-    ;;
   --create)
     [[ -f "$VAR_FILE" ]] || fail "variable file not found: $VAR_FILE"
     run_plan                              # always fresh plan (rm -f inside)
     log "refreshing Azure CLI token"
     az account get-access-token --resource https://management.azure.com > /dev/null 2>&1 || true
+
+    # Auto-import orphaned ACA resources from previous failed applies
+    derive_names
+    import_orphaned_aca
 
     if $SKIP_ACA; then
       log "applying infrastructure only (skipping Container Apps)"
