@@ -1,6 +1,10 @@
-# Trigger only when this workload or the shared Python CI template changes.
-# The path filter is intentionally tight so unrelated repo edits do not burn
-# CI minutes.
+# ---------------------------------------------------------------------------
+# CI pipeline for the ELT workload.
+#
+# Triggers when ELT code, shared utilities, tests, or the CI script itself
+# change. Docker builds are disabled here because the ELT phase does not
+# require a container image – it runs inside the training container later.
+# ---------------------------------------------------------------------------
 
 trigger:
   batch: true
@@ -18,7 +22,6 @@ trigger:
       - azure-pipelines/templates/python-ci.yaml
       - src/scripts/python_ci.sh
 
-# PR validation mirrors the main branch trigger behavior.
 pr:
   branches:
     include:
@@ -36,8 +39,5 @@ steps:
       serviceDirectory: 'src/workloads/training_pipeline'
       pythonVersion: '3.14'
       requirementsFile: 'src/workloads/training_pipeline/requirements-ci.txt'
-      # The ELT workload currently uses a single requirements file. Passing the
-      # same path for dev requirements is fine; the script deduplicates it so
-      # pip does not reinstall the same file twice.
       devRequirementsFile: 'src/workloads/training_pipeline/requirements-ci.txt'
       includeDocker: false

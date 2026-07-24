@@ -1,5 +1,10 @@
-# Trigger only when the training workload, shared Python CI template, or the
-# shared CI script changes.
+# ---------------------------------------------------------------------------
+# CI pipeline for the ML training workload.
+#
+# Triggers when training code, shared utilities, tests, or the CI script
+# change. Uses the same Python version as the container (3.14).
+# The smoke test step is commented out until Azure/MLflow mocks are in place.
+# ---------------------------------------------------------------------------
 
 trigger:
   batch: true
@@ -9,12 +14,14 @@ trigger:
       - feat/*
   paths:
     include:
-      - src/workloads/train/**
+      - src/workloads/training_pipeline/train/**
+      - src/workloads/training_pipeline/utils/**
+      - src/workloads/training_pipeline/main.py
+      - src/workloads/training_pipeline/tests/**
       - azure-pipelines/ci/ci-ml-training.yaml
       - azure-pipelines/templates/python-ci.yaml
       - src/scripts/python_ci.sh
 
-# PRs into main should be validated with the same template.
 pr:
   branches:
     include:
@@ -29,19 +36,10 @@ variables:
 steps:
   - template: /azure-pipelines/templates/python-ci.yaml
     parameters:
-      serviceDirectory: 'src/workloads/train'
-      pythonVersion: '3.11'
-      requirementsFile: 'src/workloads/train/requirements.txt'
-      devRequirementsFile: 'src/workloads/train/requirements-dev.txt'
+      serviceDirectory: 'src/workloads/training_pipeline'
+      pythonVersion: '3.14'
+      requirementsFile: 'src/workloads/training_pipeline/requirements-ci.txt'
+      devRequirementsFile: 'src/workloads/training_pipeline/requirements-ci.txt'
       includeDocker: false
-
-      # preTestSteps runs after lint/type-check but before pytest.
-      # Keep it for any training-specific smoke step you want to exercise
-      # during CI without duplicating the shared setup logic.
-      preTestSteps:
-        - bash: |
-            set -euo pipefail
-            "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" install-deps
-            source "$(Pipeline.Workspace)/.venv/bin/activate"
-            python src/workloads/train/train.py
-          displayName: 'Train model and register in MLflow'
+      # preTestSteps intentionally empty – add smoke test only after mocking
+      # Azure and MLflow dependencies.

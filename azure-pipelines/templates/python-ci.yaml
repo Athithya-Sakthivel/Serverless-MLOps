@@ -1,12 +1,19 @@
+# ---------------------------------------------------------------------------
 # Reusable CI template for Python services.
-# The important optimization here is split caching:
-#   1. pip's download cache avoids re-downloading wheels.
-#   2. the virtualenv cache avoids reinstalling the dependency graph when the
+#
+# Every invocation goes through `bash python_ci.sh <command>` so that the
+# script file does NOT need the execute bit. This avoids exit code 126
+# ("Permission denied") when the repository checkout gives the file mode 0644.
+#
+# Two cache layers:
+#   1. pip download cache – avoids re-downloading wheels.
+#   2. virtualenv cache – avoids reinstalling the dependency graph when
 #      requirements files are unchanged.
 #
-# Azure Cache@2 supports file-content-based key segments, so the cache key
-# changes automatically when the requirements files change. That keeps the
-# cache safe instead of relying on manual version bumps.
+# Cache@2 supports file-content-based key segments via the `${{ }}` syntax
+# in the key string. The cache key changes automatically when the referenced
+# files change, so no manual version bumps are needed.
+# ---------------------------------------------------------------------------
 
 parameters:
   - name: serviceDirectory
@@ -50,8 +57,7 @@ steps:
       architecture: 'x64'
 
   # Cache layer 1: pip's HTTP/wheel cache.
-  # This reduces repeated downloads, especially when the cache hit still needs
-  # to rebuild the virtualenv.
+  # Even when the virtualenv cache misses, this saves re-downloading packages.
   - task: Cache@2
     displayName: 'Restore pip cache'
     inputs:
@@ -62,7 +68,7 @@ steps:
       path: '$(Pipeline.Workspace)/pip-cache'
 
   # Cache layer 2: the entire virtualenv.
-  # On an exact cache hit, the install step becomes almost free.
+  # On an exact cache hit, install-deps becomes a ~1-second no-op.
   - task: Cache@2
     displayName: 'Restore virtualenv'
     inputs:
@@ -70,9 +76,12 @@ steps:
       path: '$(Pipeline.Workspace)/.venv'
       cacheHitVar: 'VENV_CACHE_RESTORED'
 
+  # All subsequent steps invoke the CI script through `bash` explicitly.
+  # This avoids exit code 126 when the file lacks the execute bit after checkout.
+
   - bash: |
       set -euo pipefail
-      "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" install-deps
+      bash "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" install-deps
     displayName: 'Install dependencies'
     env:
       SERVICE_DIRECTORY: '${{ parameters.serviceDirectory }}'
@@ -81,21 +90,21 @@ steps:
 
   - bash: |
       set -euo pipefail
-      "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" ruff-lint
+      bash "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" ruff-lint
     displayName: 'Ruff lint'
     env:
       SERVICE_DIRECTORY: '${{ parameters.serviceDirectory }}'
 
   - bash: |
       set -euo pipefail
-      "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" ruff-format
+      bash "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" ruff-format
     displayName: 'Ruff format check'
     env:
       SERVICE_DIRECTORY: '${{ parameters.serviceDirectory }}'
 
   - bash: |
       set -euo pipefail
-      "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" typecheck
+      bash "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" typecheck
     displayName: 'basedpyright type-check'
     env:
       SERVICE_DIRECTORY: '${{ parameters.serviceDirectory }}'
@@ -105,7 +114,7 @@ steps:
 
   - bash: |
       set -euo pipefail
-      "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" run-tests
+      bash "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" run-tests
     displayName: 'Run tests'
     env:
       SERVICE_DIRECTORY: '${{ parameters.serviceDirectory }}'
@@ -121,18 +130,19 @@ steps:
 
   - bash: |
       set -euo pipefail
-      "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" pip-audit
+      bash "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" pip-audit
     displayName: 'Dependency vulnerability audit'
     env:
       SERVICE_DIRECTORY: '${{ parameters.serviceDirectory }}'
 
   - bash: |
       set -euo pipefail
-      "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" trivy-fs
+      bash "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" trivy-fs
     displayName: 'Trivy filesystem scan'
     env:
       SERVICE_DIRECTORY: '${{ parameters.serviceDirectory }}'
 
+  # Docker steps only run when includeDocker is true.
   - ${{ if eq(parameters.includeDocker, true) }}:
     - task: AzureCLI@2
       displayName: 'Authenticate Docker to ACR'
@@ -143,13 +153,13 @@ steps:
         scriptLocation: 'inlineScript'
         inlineScript: |
           set -euo pipefail
-          "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" docker-login
+          bash "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" docker-login
       env:
         CONTAINER_REGISTRY: '$(containerRegistry)'
 
     - bash: |
         set -euo pipefail
-        "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" build-image
+        bash "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" build-image
       displayName: 'Build container image'
       env:
         CONTAINER_REGISTRY: '$(containerRegistry)'
@@ -158,7 +168,7 @@ steps:
 
     - bash: |
         set -euo pipefail
-        "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" scan-image
+        bash "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" scan-image
       displayName: 'Scan container image'
       env:
         CONTAINER_REGISTRY: '$(containerRegistry)'
@@ -173,7 +183,7 @@ steps:
         scriptLocation: 'inlineScript'
         inlineScript: |
           set -euo pipefail
-          "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" push-image-and-manifest
+          bash "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" push-image-and-manifest
       env:
         CONTAINER_REGISTRY: '$(containerRegistry)'
         CONTAINER_REPOSITORY: '${{ parameters.containerRepository }}'
