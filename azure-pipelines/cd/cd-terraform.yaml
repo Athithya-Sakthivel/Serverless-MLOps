@@ -3,7 +3,7 @@
 # ==============================================================================
 # Triggered automatically when the CI pipeline (terraform-ci) succeeds on main.
 # Deploys the full infrastructure to the staging environment.
-# 
+#
 # Bugs encountered & fixed:
 #   1. ExpiredAuthenticationToken on long-running applies (20+ min).
 #      → Switched to OIDC (ARM_USE_OIDC=true). The Azure SDK auto-refreshes
@@ -12,9 +12,6 @@
 #      because the Azure for Students subscription throttles compute creation.
 #      → Added --skip-aca flag to run.sh. First deploy infrastructure-only,
 #        then a second deploy with Container Apps (environment is warm).
-#      → In the pipeline, we run TWO ./run.sh commands:
-#          a) --create --skip-aca  (infrastructure only)
-#          b) --create             (full deploy – ACA succeeds because warm)
 #   3. Orphaned Container App/Job resources from previous failed applies
 #      caused "resource already exists" errors.
 #      → run.sh now auto-imports orphaned ACA resources before planning,
@@ -85,9 +82,9 @@ jobs:
                   export TF_IN_AUTOMATION="true"
 
                   ./run.sh --create --env staging --skip-aca
-                env:
-                  AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
-                  AZDO_PERSONAL_ACCESS_TOKEN: $(AZDO_PERSONAL_ACCESS_TOKEN)
+              env:
+                AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
+                AZDO_PERSONAL_ACCESS_TOKEN: $(AZDO_PERSONAL_ACCESS_TOKEN)
 
             # ---------------------------------------------------------------
             # Phase 2: Full deploy including Container Apps.
@@ -116,8 +113,6 @@ jobs:
                   export TF_IN_AUTOMATION="true"
 
                   ./run.sh --create --env staging
-                env:
-                    # Explicitly inject Azure DevOps provider credentials.
-                    # Secret variables from variable groups are NOT auto-exported.
-                  AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
-                  AZDO_PERSONAL_ACCESS_TOKEN: $(AZDO_PERSONAL_ACCESS_TOKEN)
+              env:
+                AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
+                AZDO_PERSONAL_ACCESS_TOKEN: $(AZDO_PERSONAL_ACCESS_TOKEN)
