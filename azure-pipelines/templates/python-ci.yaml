@@ -28,9 +28,6 @@ parameters:
     type: stepList
     default: []
 
-variables:
-  PIP_CACHE_DIR: $(Pipeline.Workspace)/.cache/pip   # must match Cache@2 path
-
 steps:
   - checkout: self
     clean: true
@@ -55,7 +52,7 @@ steps:
       restoreKeys: |
         pip | "$(Agent.OS)" | "python-${{ parameters.pythonVersion }}"
         pip | "$(Agent.OS)"
-      path: $(PIP_CACHE_DIR)
+      path: $(Pipeline.Workspace)/.cache/pip
       cacheHitVar: PIP_CACHE_RESTORED
 
   # Install dependencies into an isolated virtual environment.
@@ -65,7 +62,7 @@ steps:
       python -m venv .venv
       source .venv/bin/activate
       python -m pip install --upgrade pip setuptools wheel
-      pip install --cache-dir "$(PIP_CACHE_DIR)" \
+      pip install --cache-dir "$(Pipeline.Workspace)/.cache/pip" \
         -r "$(Build.SourcesDirectory)/${{ parameters.requirementsFile }}" \
         -r "$(Build.SourcesDirectory)/${{ parameters.devRequirementsFile }}"
       python -m pip check
