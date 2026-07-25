@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from elt.extract import read_parquet_from_blob, resolve_input_blob_name
 from elt.load import (
     checkpoint_payload,
@@ -19,15 +21,22 @@ from utils.timing import utc_now
 LOG = get_logger(__name__)
 
 
-def _run_elt(config: AppConfig, raw_blob_name: str) -> str:
+def _run_elt(
+    config: AppConfig,
+    raw_blob_name: str,
+    blob_service_client: Any = None,
+    credential: object | None = None,
+) -> str:
     """Execute the ELT phase if the checkpoint is not already COMPLETED.
 
-    Returns the clean blob name.
+    A fake *blob_service_client* can be injected for testing.
     """
     existing = read_checkpoint(
         storage_account_name=config.storage.storage_account_name,
         checkpoint_container_name=config.storage.checkpoint_container_name,
         raw_blob_name=raw_blob_name,
+        blob_service_client=blob_service_client,
+        credential=credential,  # type: ignore[arg-type]
     )
     if existing and existing.get("status") == "COMPLETED":
         clean_name = existing["clean_blob_name"]
@@ -39,6 +48,8 @@ def _run_elt(config: AppConfig, raw_blob_name: str) -> str:
         storage_account_name=config.storage.storage_account_name,
         container_name=config.storage.raw_container_name,
         blob_name=raw_blob_name,
+        blob_service_client=blob_service_client,
+        credential=credential,  # type: ignore[arg-type]
     )
     validation_report = validate_raw_frame(raw_frame)
     clean_frame, transform_metrics = clean_raw_frame(raw_frame, validation_report)
@@ -49,6 +60,8 @@ def _run_elt(config: AppConfig, raw_blob_name: str) -> str:
         storage_account_name=config.storage.storage_account_name,
         clean_container_name=config.storage.clean_container_name,
         clean_blob_name_value=clean_name,
+        blob_service_client=blob_service_client,
+        credential=credential,  # type: ignore[arg-type]
     )
 
     finished = utc_now()
@@ -83,6 +96,8 @@ def _run_elt(config: AppConfig, raw_blob_name: str) -> str:
         checkpoint_container_name=config.storage.checkpoint_container_name,
         raw_blob_name=raw_blob_name,
         payload=payload,
+        blob_service_client=blob_service_client,
+        credential=credential,  # type: ignore[arg-type]
     )
 
     LOG.info("ELT completed: clean blob = %s", clean_name)
@@ -94,15 +109,12 @@ def main() -> int:
     config = AppConfig.from_env()
     raw_blob_name = resolve_input_blob_name()
 
-    _ = _run_elt(config, raw_blob_name)
+    clean_blob_name_value = _run_elt(config, raw_blob_name)
 
-    # ---------------------------------------------------------------
-    # Training phase will be added here once train/ is integrated.
-    # from train.orchestrator import run_training_pipeline
-    # run_training_pipeline(config, raw_blob_name, clean_blob_name_value)
-    # ---------------------------------------------------------------
-    LOG.info("Training phase not yet integrated – pipeline exiting after ELT.")
-
+    LOG.info(
+        "Training phase not yet integrated – pipeline exiting after ELT (clean blob: %s).",
+        clean_blob_name_value,
+    )
     return 0
 
 

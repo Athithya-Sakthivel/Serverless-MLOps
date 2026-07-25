@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import polars as pl
+from azure.core.credentials import TokenCredential
 from azure.core.exceptions import ResourceNotFoundError
 from utils.storage import (
     JSON_CONTENT_TYPE,
@@ -29,6 +30,7 @@ STATUS_FAILED = "FAILED"
 
 
 def clean_blob_name(raw_blob_name: str) -> str:
+    """Derive the clean blob path from the raw blob path."""
     raw_blob_name = raw_blob_name.strip().lstrip("/")
     if not raw_blob_name:
         raise ValueError("raw_blob_name is required")
@@ -43,12 +45,17 @@ def read_checkpoint(
     storage_account_name: str,
     checkpoint_container_name: str,
     raw_blob_name: str,
+    blob_service_client: Any = None,
+    credential: TokenCredential | None = None,
 ) -> dict[str, Any] | None:
-    service_client = build_blob_service_client(storage_account_name)
-    blob_client = service_client.get_blob_client(
-        container=checkpoint_container_name,
-        blob=f"elt/{raw_blob_name.lstrip('/')}.json",
-    )
+    """Read the ELT checkpoint JSON blob if it exists."""
+    if blob_service_client is None:
+        blob_service_client = build_blob_service_client(storage_account_name, credential=credential)
+
+    blob_client = blob_service_client.get_container_client(
+        checkpoint_container_name
+    ).get_blob_client(f"elt/{raw_blob_name.lstrip('/')}.json")
+
     try:
         downloader = blob_client.download_blob()
         return json.loads(downloader.readall().decode("utf-8"))
@@ -62,12 +69,17 @@ def write_checkpoint(
     checkpoint_container_name: str,
     raw_blob_name: str,
     payload: dict[str, Any],
+    blob_service_client: Any = None,
+    credential: TokenCredential | None = None,
 ) -> None:
-    service_client = build_blob_service_client(storage_account_name)
-    ensure_container(service_client, checkpoint_container_name)
+    """Write (or overwrite) the ELT checkpoint JSON blob."""
+    if blob_service_client is None:
+        blob_service_client = build_blob_service_client(storage_account_name, credential=credential)
+
+    ensure_container(blob_service_client, checkpoint_container_name)
     blob_name = f"elt/{raw_blob_name.lstrip('/')}.json"
     upload_bytes_to_blob(
-        service_client,
+        blob_service_client,
         container_name=checkpoint_container_name,
         blob_name=blob_name,
         data=json.dumps(payload, indent=2, sort_keys=True).encode("utf-8"),
@@ -83,18 +95,23 @@ def write_clean_frame(
     storage_account_name: str,
     clean_container_name: str,
     clean_blob_name_value: str,
+    blob_service_client: Any = None,
+    credential: TokenCredential | None = None,
 ) -> None:
+    """Write the clean DataFrame as a Parquet blob."""
     if frame.height == 0:
         raise ValueError("Refusing to write an empty clean frame")
 
-    service_client = build_blob_service_client(storage_account_name)
+    if blob_service_client is None:
+        blob_service_client = build_blob_service_client(storage_account_name, credential=credential)
+
     fd, tmp_path_str = tempfile.mkstemp(suffix=".parquet")
     os.close(fd)
     tmp_path = Path(tmp_path_str)
     try:
         frame.write_parquet(tmp_path)
         upload_file_to_blob(
-            service_client,
+            blob_service_client,
             container_name=clean_container_name,
             blob_name=clean_blob_name_value,
             file_path=tmp_path,
@@ -116,6 +133,7 @@ def checkpoint_payload(
     finished_at: datetime,
     status: str = STATUS_COMPLETED,
 ) -> dict[str, Any]:
+    """Build a standard ELT checkpoint payload."""
     return {
         "status": status,
         "raw_blob_name": raw_blob_name,
