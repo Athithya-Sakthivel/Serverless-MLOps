@@ -1,16 +1,10 @@
+# Azure Storage intentionally uses public endpoints (ADR decision).
+# Private Endpoints, VNet integration, and Network ACL default_action="Deny" are out of scope; Azure AD authentication, Shared Key access disabled, public blob access disabled, and TLS 1.2 are enforced.
 AZU-0012
 
-Accepted risk.
-
-This project intentionally uses Azure Storage over the public endpoint.
-Private Endpoints and VNet integration are out of scope to keep the serverless architecture simple and cost-effective.
-
-Security controls in place:
-- Azure AD authentication where supported
-- Shared Key access disabled (target configuration)
-- Public blob access disabled
-- TLS 1.2 enforced
-
-Network ACLs with default_action = "Deny" are intentionally not enabled because
-the architecture does not use private networking and must remain accessible to
-Azure Functions, Azure DevOps, and developers over public endpoints.
+# GitPython is a transitive dependency only; the application does not exercise vulnerable code paths.
+# Accepted risk for GHSA-6p8h-3wgx-97gf, GHSA-94p4-4cq8-9g67, GHSA-fjr4-x663-mwxc, and GHSA-r9mr-m37c-5fr3 until a compatible fixed version is available.
+GHSA-6p8h-3wgx-97gf
+GHSA-94p4-4cq8-9g67
+GHSA-fjr4-x663-mwxc
+GHSA-r9mr-m37c-5fr3
