@@ -1,11 +1,4 @@
-# ---------------------------------------------------------------------------
-# CI pipeline for the ELT workload.
-#
-# Triggers when ELT code, shared utilities, tests, or the CI script itself
-# change. Docker builds are disabled here because the ELT phase does not
-# require a container image – it runs inside the training container later.
-# ---------------------------------------------------------------------------
-
+# ELT CI pipeline – triggers on changes to ELT code or shared template.
 trigger:
   batch: true
   branches:
@@ -20,7 +13,6 @@ trigger:
       - src/workloads/training_pipeline/requirements-ci.txt
       - azure-pipelines/ci/ci-elt.yaml
       - azure-pipelines/templates/python-ci.yaml
-      - src/scripts/python_ci.sh
 
 pr:
   branches:
@@ -34,6 +26,8 @@ variables:
   - group: elt-ci-vars
 
 steps:
+  # Absolute path ensures the template is always found regardless of
+  # where the calling pipeline resides.
   - template: /azure-pipelines/templates/python-ci.yaml
     parameters:
       serviceDirectory: 'src/workloads/training_pipeline'

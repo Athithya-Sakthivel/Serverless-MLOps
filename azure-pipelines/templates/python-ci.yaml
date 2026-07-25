@@ -1,49 +1,35 @@
-# ---------------------------------------------------------------------------
 # Reusable CI template for Python services.
+# - Python setup, pip caching (Cache@2), dependency install, lint/format/type-check,
+#   tests, security scans, optional Docker build/scan/push/manifest.
 #
-# Every invocation goes through `bash python_ci.sh <command>` so that the
-# script file does NOT need the execute bit. This avoids exit code 126
-# ("Permission denied") when the repository checkout gives the file mode 0644.
-#
-# Two cache layers:
-#   1. pip download cache – avoids re-downloading wheels.
-#   2. virtualenv cache – avoids reinstalling the dependency graph when
-#      requirements files are unchanged.
-#
-# Cache@2 supports file-content-based key segments via the `${{ }}` syntax
-# in the key string. The cache key changes automatically when the referenced
-# files change, so no manual version bumps are needed.
-# ---------------------------------------------------------------------------
+# Caching: Cache@2 hashes the *contents* of the requirements files.
+# Pip uses the same directory via --cache-dir so that restored caches are used.
 
 parameters:
   - name: serviceDirectory
     type: string
-
   - name: pythonVersion
     type: string
     default: '3.14'
-
   - name: requirementsFile
     type: string
-
   - name: devRequirementsFile
     type: string
-
   - name: includeDocker
     type: boolean
     default: false
-
   - name: containerRepository
     type: string
     default: ''
-
   - name: dockerfilePath
     type: string
     default: ''
-
   - name: preTestSteps
     type: stepList
     default: []
+
+variables:
+  PIP_CACHE_DIR: $(Pipeline.Workspace)/.cache/pip   # must match Cache@2 path
 
 steps:
   - checkout: self
@@ -56,68 +42,65 @@ steps:
       versionSpec: '${{ parameters.pythonVersion }}'
       architecture: 'x64'
 
-  # Cache layer 1: pip's HTTP/wheel cache.
-  # Even when the virtualenv cache misses, this saves re-downloading packages.
+  # ------------------------------------------------------------------
+  # Cache pip packages between runs.
+  # The key contains the full path to the requirements files so
+  # Cache@2 hashes their contents. Restore keys fall back to any
+  # cache for the same OS/Python version, avoiding full downloads.
+  # ------------------------------------------------------------------
   - task: Cache@2
-    displayName: 'Restore pip cache'
+    displayName: 'Cache pip'
     inputs:
-      key: 'pip | "$(Agent.OS)" | "python-${{ parameters.pythonVersion }}" | ${{ parameters.requirementsFile }} | ${{ parameters.devRequirementsFile }}'
+      key: 'pip | "$(Agent.OS)" | "python-${{ parameters.pythonVersion }}" | $(Build.SourcesDirectory)/${{ parameters.requirementsFile }} | $(Build.SourcesDirectory)/${{ parameters.devRequirementsFile }}'
       restoreKeys: |
         pip | "$(Agent.OS)" | "python-${{ parameters.pythonVersion }}"
         pip | "$(Agent.OS)"
-      path: '$(Pipeline.Workspace)/pip-cache'
+      path: $(PIP_CACHE_DIR)
+      cacheHitVar: PIP_CACHE_RESTORED
 
-  # Cache layer 2: the entire virtualenv.
-  # On an exact cache hit, install-deps becomes a ~1-second no-op.
-  - task: Cache@2
-    displayName: 'Restore virtualenv'
-    inputs:
-      key: 'venv | "$(Agent.OS)" | "python-${{ parameters.pythonVersion }}" | ${{ parameters.requirementsFile }} | ${{ parameters.devRequirementsFile }}'
-      path: '$(Pipeline.Workspace)/.venv'
-      cacheHitVar: 'VENV_CACHE_RESTORED'
-
-  # All subsequent steps invoke the CI script through `bash` explicitly.
-  # This avoids exit code 126 when the file lacks the execute bit after checkout.
-
+  # Install dependencies into an isolated virtual environment.
+  # --cache-dir points to the same directory as the Cache task.
   - bash: |
       set -euo pipefail
-      bash "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" install-deps
+      python -m venv .venv
+      source .venv/bin/activate
+      python -m pip install --upgrade pip setuptools wheel
+      pip install --cache-dir "$(PIP_CACHE_DIR)" \
+        -r "$(Build.SourcesDirectory)/${{ parameters.requirementsFile }}" \
+        -r "$(Build.SourcesDirectory)/${{ parameters.devRequirementsFile }}"
+      python -m pip check
     displayName: 'Install dependencies'
     env:
-      SERVICE_DIRECTORY: '${{ parameters.serviceDirectory }}'
-      REQUIREMENTS_FILE: '${{ parameters.requirementsFile }}'
-      DEV_REQUIREMENTS_FILE: '${{ parameters.devRequirementsFile }}'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
 
   - bash: |
       set -euo pipefail
-      bash "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" ruff-lint
+      source .venv/bin/activate
+      ruff check "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
     displayName: 'Ruff lint'
-    env:
-      SERVICE_DIRECTORY: '${{ parameters.serviceDirectory }}'
 
   - bash: |
       set -euo pipefail
-      bash "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" ruff-format
+      source .venv/bin/activate
+      ruff format --check "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
     displayName: 'Ruff format check'
-    env:
-      SERVICE_DIRECTORY: '${{ parameters.serviceDirectory }}'
 
   - bash: |
       set -euo pipefail
-      bash "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" typecheck
+      source .venv/bin/activate
+      basedpyright "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
     displayName: 'basedpyright type-check'
-    env:
-      SERVICE_DIRECTORY: '${{ parameters.serviceDirectory }}'
 
   - ${{ each step in parameters.preTestSteps }}:
     - ${{ step }}
 
   - bash: |
       set -euo pipefail
-      bash "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" run-tests
+      source .venv/bin/activate
+      pytest "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}/tests" \
+        -v \
+        --junitxml="$(Build.SourcesDirectory)/test-results.xml"
     displayName: 'Run tests'
-    env:
-      SERVICE_DIRECTORY: '${{ parameters.serviceDirectory }}'
 
   - task: PublishTestResults@2
     displayName: 'Publish test results'
@@ -130,19 +113,30 @@ steps:
 
   - bash: |
       set -euo pipefail
-      bash "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" pip-audit
+      source .venv/bin/activate
+      mkdir -p "$(Build.ArtifactStagingDirectory)/security"
+      pip-audit -f json -o "$(Build.ArtifactStagingDirectory)/security/pip-audit.json"
     displayName: 'Dependency vulnerability audit'
-    env:
-      SERVICE_DIRECTORY: '${{ parameters.serviceDirectory }}'
 
   - bash: |
       set -euo pipefail
-      bash "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" trivy-fs
+      mkdir -p "$(Build.ArtifactStagingDirectory)/security"
+      TRIVY_VERSION='0.72.0'
+      curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 \
+        -o /tmp/trivy.tar.gz \
+        "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+      tar -xzf /tmp/trivy.tar.gz -C /tmp trivy
+      chmod +x /tmp/trivy
+      /tmp/trivy fs \
+        --scanners vuln \
+        --format sarif \
+        --output "$(Build.ArtifactStagingDirectory)/security/trivy-fs.sarif" \
+        --severity HIGH,CRITICAL \
+        --exit-code 1 \
+        "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
     displayName: 'Trivy filesystem scan'
-    env:
-      SERVICE_DIRECTORY: '${{ parameters.serviceDirectory }}'
 
-  # Docker steps only run when includeDocker is true.
+  # ── Docker (optional) ──────────────────────────────────────────
   - ${{ if eq(parameters.includeDocker, true) }}:
     - task: AzureCLI@2
       displayName: 'Authenticate Docker to ACR'
@@ -153,26 +147,53 @@ steps:
         scriptLocation: 'inlineScript'
         inlineScript: |
           set -euo pipefail
-          bash "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" docker-login
-      env:
-        CONTAINER_REGISTRY: '$(containerRegistry)'
+          az acr login --name "$(containerRegistry)"
 
     - bash: |
         set -euo pipefail
-        bash "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" build-image
+        export DOCKER_BUILDKIT=1
+        ROOT="$(Build.SourcesDirectory)"
+        CONTEXT="$ROOT/${{ parameters.serviceDirectory }}"
+        IMAGE="$(containerRegistry).azurecr.io/${{ parameters.containerRepository }}:$(Build.SourceVersion)"
+        docker buildx rm ci-builder >/dev/null 2>&1 || true
+        docker buildx create --name ci-builder --use >/dev/null
+        docker buildx inspect --bootstrap >/dev/null
+        if [ "${BUILD_SOURCEBRANCH}" = "refs/heads/main" ]; then
+          CACHE_REF="$(containerRegistry).azurecr.io/build-cache/${{ parameters.containerRepository }}:buildcache"
+          docker buildx build \
+            --platform linux/amd64 \
+            --pull \
+            --load \
+            --cache-from type=registry,ref="$CACHE_REF" \
+            --cache-to type=registry,ref="$CACHE_REF",mode=max \
+            --label org.opencontainers.image.revision="$(Build.SourceVersion)" \
+            --file "$ROOT/${{ parameters.dockerfilePath }}" \
+            --tag "$IMAGE" \
+            "$CONTEXT"
+        else
+          docker buildx build \
+            --platform linux/amd64 \
+            --pull \
+            --load \
+            --label org.opencontainers.image.revision="$(Build.SourceVersion)" \
+            --file "$ROOT/${{ parameters.dockerfilePath }}" \
+            --tag "$IMAGE" \
+            "$CONTEXT"
+        fi
       displayName: 'Build container image'
-      env:
-        CONTAINER_REGISTRY: '$(containerRegistry)'
-        CONTAINER_REPOSITORY: '${{ parameters.containerRepository }}'
-        DOCKERFILE_PATH: '${{ parameters.dockerfilePath }}'
 
     - bash: |
         set -euo pipefail
-        bash "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" scan-image
+        IMAGE="$(containerRegistry).azurecr.io/${{ parameters.containerRepository }}:$(Build.SourceVersion)"
+        mkdir -p "$(Build.ArtifactStagingDirectory)/security"
+        /tmp/trivy image \
+          --scanners vuln \
+          --format sarif \
+          --output "$(Build.ArtifactStagingDirectory)/security/trivy-image.sarif" \
+          --severity HIGH,CRITICAL \
+          --exit-code 1 \
+          "$IMAGE"
       displayName: 'Scan container image'
-      env:
-        CONTAINER_REGISTRY: '$(containerRegistry)'
-        CONTAINER_REPOSITORY: '${{ parameters.containerRepository }}'
 
     - task: AzureCLI@2
       displayName: 'Push image and generate manifest'
@@ -183,10 +204,20 @@ steps:
         scriptLocation: 'inlineScript'
         inlineScript: |
           set -euo pipefail
-          bash "$(Build.SourcesDirectory)/src/scripts/python_ci.sh" push-image-and-manifest
-      env:
-        CONTAINER_REGISTRY: '$(containerRegistry)'
-        CONTAINER_REPOSITORY: '${{ parameters.containerRepository }}'
+          REGISTRY="$(containerRegistry)"
+          REPO="${{ parameters.containerRepository }}"
+          TAG="$(Build.SourceVersion)"
+          IMAGE="${REGISTRY}.azurecr.io/${REPO}:${TAG}"
+          az acr login --name "$REGISTRY"
+          docker push "$IMAGE"
+          mkdir -p "$(Build.ArtifactStagingDirectory)/deploy-manifest"
+          python "$(Build.SourcesDirectory)/src/scripts/push_manifest.py" \
+            --registry "$REGISTRY" \
+            --repository "$REPO" \
+            --tag "$TAG" \
+            --image "$IMAGE" \
+            --build-id "$(Build.BuildId)" \
+            --output "$(Build.ArtifactStagingDirectory)/deploy-manifest/deploy-manifest.json"
 
     - task: PublishPipelineArtifact@1
       displayName: 'Publish deploy manifest'

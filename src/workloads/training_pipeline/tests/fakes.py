@@ -65,6 +65,10 @@ class FakeContainerClient:
     ) -> None:
         self.get_blob_client(name).upload_blob(data, overwrite=overwrite)
 
+    def create_container(self) -> None:
+        """No‑op – container is created automatically on first upload."""
+        pass
+
 
 class FakeBlobServiceClient:
     """In‑memory fake that stores blobs in nested dicts.
