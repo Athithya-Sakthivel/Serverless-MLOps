@@ -2,8 +2,12 @@
 # Private Endpoints, VNet integration, and Network ACL default_action="Deny" are out of scope; Azure AD authentication, Shared Key access disabled, public blob access disabled, and TLS 1.2 are enforced.
 AZU-0012
 
-# GitPython is a transitive dependency only; the application does not exercise vulnerable code paths.
-# Accepted risk for GHSA-6p8h-3wgx-97gf, GHSA-94p4-4cq8-9g67, GHSA-fjr4-x663-mwxc, and GHSA-r9mr-m37c-5fr3 until a compatible fixed version is available.
+# GitPython is a transitive dependency only.
+# The application does not execute vulnerable GitPython code paths
+# (GHSA-6p8h-3wgx-97gf, GHSA-94p4-4cq8-9g67, GHSA-fjr4-x663-mwxc,
+# GHSA-r9mr-m37c-5fr3). Risk accepted until the dependency chain
+# provides a compatible fixed version.
+
 GHSA-6p8h-3wgx-97gf
 GHSA-94p4-4cq8-9g67
 GHSA-fjr4-x663-mwxc
