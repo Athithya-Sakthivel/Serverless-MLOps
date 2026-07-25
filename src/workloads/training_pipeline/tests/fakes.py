@@ -6,8 +6,17 @@ patches are needed for the ELT orchestration tests.
 
 from __future__ import annotations
 
-from io import BytesIO
 from typing import IO
+
+
+class FakeDownloadStream:
+    """Simulates an Azure ``StorageStreamDownloader`` – returns bytes via ``readall()``."""
+
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    def readall(self) -> bytes:
+        return self._data
 
 
 class FakeBlobClient:
@@ -17,9 +26,9 @@ class FakeBlobClient:
         self._name = name
         self._container = container
 
-    def download_blob(self) -> BytesIO:
+    def download_blob(self) -> FakeDownloadStream:
         data = self._container._blobs.get(self._name, b"")
-        return BytesIO(data)
+        return FakeDownloadStream(data)
 
     def upload_blob(
         self,
