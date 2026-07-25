@@ -1,9 +1,4 @@
 # Reusable CI template for Python services.
-# - Python setup, pip caching (Cache@2), dependency install, lint/format/type-check,
-#   tests, security scans, optional Docker build/scan/push/manifest.
-#
-# Caching: Cache@2 hashes the *contents* of the requirements files.
-# Pip uses the same directory via --cache-dir so that restored caches are used.
 
 parameters:
   - name: serviceDirectory
@@ -39,12 +34,6 @@ steps:
       versionSpec: '${{ parameters.pythonVersion }}'
       architecture: 'x64'
 
-  # ------------------------------------------------------------------
-  # Cache pip packages between runs.
-  # The key contains the full path to the requirements files so
-  # Cache@2 hashes their contents. Restore keys fall back to any
-  # cache for the same OS/Python version, avoiding full downloads.
-  # ------------------------------------------------------------------
   - task: Cache@2
     displayName: 'Cache pip'
     inputs:
@@ -53,10 +42,7 @@ steps:
         pip | "$(Agent.OS)" | "python-${{ parameters.pythonVersion }}"
         pip | "$(Agent.OS)"
       path: $(Pipeline.Workspace)/.cache/pip
-      cacheHitVar: PIP_CACHE_RESTORED
 
-  # Install dependencies into an isolated virtual environment.
-  # --cache-dir points to the same directory as the Cache task.
   - bash: |
       set -euo pipefail
       python -m venv .venv
@@ -111,7 +97,12 @@ steps:
   - bash: |
       set -euo pipefail
       source .venv/bin/activate
+      mkdir -p "$(Build.ArtifactStagingDirectory)/security"
+      pip-audit -f json -o "$(Build.ArtifactStagingDirectory)/security/pip-audit.json"
+    displayName: 'Dependency vulnerability audit'
 
+  - bash: |
+      set -euo pipefail
       mkdir -p "$(Build.ArtifactStagingDirectory)/security"
 
       TRIVY_VERSION='0.72.0'
@@ -124,7 +115,6 @@ steps:
       JSON_REPORT="$(Build.ArtifactStagingDirectory)/security/trivy-fs.json"
       SARIF_REPORT="$(Build.ArtifactStagingDirectory)/security/trivy-fs.sarif"
       TARGET_DIR="$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
-
       rm -f "$JSON_REPORT" "$SARIF_REPORT"
 
       set +e
@@ -138,12 +128,12 @@ steps:
       set -e
 
       if [ "$scan_rc" -ne 0 ]; then
-        echo "Trivy filesystem scan failed before report generation (exit ${scan_rc})."
+        echo "Trivy filesystem scan failed (exit ${scan_rc})."
         exit "$scan_rc"
       fi
 
       if [ ! -s "$JSON_REPORT" ]; then
-        echo "Trivy did not produce a JSON report at $JSON_REPORT."
+        echo "Trivy did not produce a JSON report."
         exit 1
       fi
 
@@ -160,74 +150,61 @@ steps:
         --output "$SARIF_REPORT" \
         "$JSON_REPORT"
 
-      findings_count="$(
-        python - "$JSON_REPORT" <<'PY'
-import json
-import sys
+      python3 -c "
+import json, sys
 from collections import Counter
-from pathlib import Path
 
-report_path = Path(sys.argv[1])
-report = json.loads(report_path.read_text())
+with open('$JSON_REPORT') as f:
+    report = json.load(f)
 
 findings = []
-for result in report.get("Results") or []:
-    target = result.get("Target") or report.get("ArtifactName") or "unknown target"
-    for vuln in result.get("Vulnerabilities") or []:
-        severity = (vuln.get("Severity") or "").upper()
-        if severity in {"HIGH", "CRITICAL"}:
+for result in report.get('Results') or []:
+    target = result.get('Target') or 'unknown'
+    for vuln in result.get('Vulnerabilities') or []:
+        severity = (vuln.get('Severity') or '').upper()
+        if severity in {'HIGH', 'CRITICAL'}:
             findings.append((target, vuln))
 
 if not findings:
     print(0)
-    raise SystemExit(0)
+    sys.exit(0)
 
 print(len(findings))
-print("")
-print(f"Trivy policy findings: {len(findings)} HIGH/CRITICAL vulnerability(s).")
+print(f'Trivy policy findings: {len(findings)} HIGH/CRITICAL vulnerability(s).')
+print()
 
 by_target = {}
 for target, vuln in findings:
     by_target.setdefault(target, []).append(vuln)
 
 for target, vulns in by_target.items():
-    counts = Counter((v.get("Severity") or "UNKNOWN").upper() for v in vulns)
-    severity_parts = [f"{severity}: {counts[severity]}" for severity in ("CRITICAL", "HIGH") if counts[severity]]
-    print(f"- {target} ({', '.join(severity_parts)})")
-
+    counts = Counter((v.get('Severity') or 'UNKNOWN').upper() for v in vulns)
+    parts = [f'{s}: {counts[s]}' for s in ('CRITICAL', 'HIGH') if counts[s]]
+    print(f'- {target} ({', '.join(parts)})')
     for vuln in vulns[:5]:
-        vuln_id = vuln.get("VulnerabilityID") or "unknown-id"
-        pkg_name = vuln.get("PkgName") or vuln.get("PkgID") or "unknown package"
-        installed = vuln.get("InstalledVersion") or "unknown version"
-        fixed = vuln.get("FixedVersion") or "unfixed"
-        title = vuln.get("Title") or ""
-
-        line = f"  - {vuln_id} | {pkg_name} | installed: {installed} | fixed: {fixed}"
-        print(line)
+        vid = vuln.get('VulnerabilityID', 'unknown')
+        pkg = vuln.get('PkgName', 'unknown')
+        installed = vuln.get('InstalledVersion', '?')
+        fixed = vuln.get('FixedVersion', 'unfixed')
+        title = vuln.get('Title', '')
+        print(f'  - {vid} | {pkg} | installed: {installed} | fixed: {fixed}')
         if title:
-            print(f"    {title}")
-
+            print(f'    {title}')
     remaining = len(vulns) - 5
     if remaining > 0:
-        print(f"  - ... {remaining} more")
-PY
-      )"
+        print(f'  - ... {remaining} more')
+"
 
-      findings_total="$(printf '%s\n' "$findings_count" | head -n1)"
       if [ "$findings_total" -gt 0 ]; then
         echo
-        echo "$findings_count" | tail -n +2
-        echo
-        echo "SARIF report written to: $SARIF_REPORT"
+        echo "SARIF report: $SARIF_REPORT"
         exit 1
       fi
 
-      echo
       echo "Trivy policy findings: 0 HIGH/CRITICAL vulnerability(s)."
-      echo "SARIF report written to: $SARIF_REPORT"
+      echo "SARIF report: $SARIF_REPORT"
     displayName: 'Trivy filesystem scan'
 
-  # ── Docker (optional) ──────────────────────────────────────────
   - ${{ if eq(parameters.includeDocker, true) }}:
     - task: AzureCLI@2
       displayName: 'Authenticate Docker to ACR'
