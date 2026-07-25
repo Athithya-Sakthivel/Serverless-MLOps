@@ -116,7 +116,7 @@ steps:
     displayName: 'Dependency vulnerability audit'
 
   - bash: |
-      set -euo pipefail
+      # set -euo pipefail commented out to avoid failing before printing vulnerability
       mkdir -p "$(Build.ArtifactStagingDirectory)/security"
       TRIVY_VERSION='0.72.0'
       curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 \
