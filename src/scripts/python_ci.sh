@@ -147,6 +147,59 @@ require_container_vars() {
     [[ -n "${DOCKERFILE_PATH}" ]] || die "DOCKERFILE_PATH is required for Docker operations."
 }
 
+print_trivy_policy_summary() {
+    local json_report="$1"
+    python - "$json_report" <<'PY'
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+
+report_path = Path(sys.argv[1])
+report = json.loads(report_path.read_text())
+
+policy_findings = []
+for result in report.get("Results") or []:
+    target = result.get("Target") or report.get("ArtifactName") or "unknown target"
+    for vuln in result.get("Vulnerabilities") or []:
+        severity = (vuln.get("Severity") or "").upper()
+        if severity in {"HIGH", "CRITICAL"}:
+            policy_findings.append((target, vuln))
+
+if not policy_findings:
+    print("Trivy policy findings: 0 HIGH/CRITICAL vulnerability(s).")
+    raise SystemExit(0)
+
+print(f"Trivy policy findings: {len(policy_findings)} HIGH/CRITICAL vulnerability(s).")
+
+by_target = {}
+for target, vuln in policy_findings:
+    by_target.setdefault(target, []).append(vuln)
+
+for target, vulns in by_target.items():
+    counts = Counter((v.get("Severity") or "UNKNOWN").upper() for v in vulns)
+    severity_parts = [f"{severity}: {counts[severity]}" for severity in ("CRITICAL", "HIGH") if counts[severity]]
+    print(f"- {target} ({', '.join(severity_parts)})")
+
+    for vuln in vulns[:5]:
+        vuln_id = vuln.get("VulnerabilityID") or "unknown-id"
+        pkg_name = vuln.get("PkgName") or vuln.get("PkgID") or "unknown package"
+        installed = vuln.get("InstalledVersion") or "unknown version"
+        fixed = vuln.get("FixedVersion") or "unfixed"
+        title = vuln.get("Title") or ""
+
+        print(f"  - {vuln_id} | {pkg_name} | installed: {installed} | fixed: {fixed}")
+        if title:
+            print(f"    {title}")
+
+    remaining = len(vulns) - 5
+    if remaining > 0:
+        print(f"  - ... {remaining} more")
+
+raise SystemExit(1)
+PY
+}
+
 # ---------------------------------------------------------------------------
 # Subcommands
 # ---------------------------------------------------------------------------
@@ -225,15 +278,52 @@ pip_audit() {
 }
 
 trivy_fs() {
+    activate_venv
     ensure_trivy
     mkdir -p "${SECURITY_DIR}"
+
+    local json_report="${SECURITY_DIR}/trivy-fs.json"
+    local sarif_report="${SECURITY_DIR}/trivy-fs.sarif"
+    local target_dir="${ROOT_DIR}/${SERVICE_DIRECTORY}"
+
+    rm -f "${json_report}" "${sarif_report}"
+
+    local scan_rc=0
+    set +e
     /tmp/trivy fs \
         --scanners vuln \
-        --format sarif \
-        --output "${SECURITY_DIR}/trivy-fs.sarif" \
+        --detection-priority comprehensive \
+        --format json \
+        --output "${json_report}" \
+        "${target_dir}"
+    scan_rc=$?
+    set -e
+
+    if [[ "${scan_rc}" -ne 0 ]]; then
+        die "Trivy filesystem scan failed before report generation (exit ${scan_rc})."
+    fi
+
+    [[ -s "${json_report}" ]] || die "Trivy did not produce a JSON report at ${json_report}."
+
+    /tmp/trivy convert \
+        --scanners vuln \
         --severity HIGH,CRITICAL \
-        --exit-code 1 \
-        "${ROOT_DIR}/${SERVICE_DIRECTORY}"
+        --format table \
+        "${json_report}"
+
+    /tmp/trivy convert \
+        --scanners vuln \
+        --severity HIGH,CRITICAL \
+        --format sarif \
+        --output "${sarif_report}" \
+        "${json_report}"
+
+    if ! print_trivy_policy_summary "${json_report}"; then
+        echo "SARIF report written to: ${sarif_report}"
+        return 1
+    fi
+
+    echo "SARIF report written to: ${sarif_report}"
 }
 
 docker_login() {
@@ -356,16 +446,16 @@ command="${1:-}"
 shift || true
 
 case "${command}" in
-    install-deps)              install_deps ;;
-    ruff-lint)                 ruff_lint ;;
-    ruff-format)               ruff_format ;;
-    typecheck)                 typecheck ;;
-    run-tests)                 run_tests ;;
-    pip-audit)                 pip_audit ;;
-    trivy-fs)                  trivy_fs ;;
-    docker-login)              docker_login ;;
-    build-image)               build_image ;;
-    scan-image)                scan_image ;;
-    push-image-and-manifest)   push_image_and_manifest ;;
-    *)                         usage >&2; exit 1 ;;
+    install-deps)             install_deps ;;
+    ruff-lint)                ruff_lint ;;
+    ruff-format)              ruff_format ;;
+    typecheck)                typecheck ;;
+    run-tests)                run_tests ;;
+    pip-audit)                pip_audit ;;
+    trivy-fs)                 trivy_fs ;;
+    docker-login)             docker_login ;;
+    build-image)              build_image ;;
+    scan-image)               scan_image ;;
+    push-image-and-manifest)  push_image_and_manifest ;;
+    *)                        usage >&2; exit 1 ;;
 esac

@@ -111,26 +111,120 @@ steps:
   - bash: |
       set -euo pipefail
       source .venv/bin/activate
-      mkdir -p "$(Build.ArtifactStagingDirectory)/security"
-      pip-audit -f json -o "$(Build.ArtifactStagingDirectory)/security/pip-audit.json"
-    displayName: 'Dependency vulnerability audit'
 
-  - bash: |
-      # set -euo pipefail commented out to avoid failing before printing vulnerability
       mkdir -p "$(Build.ArtifactStagingDirectory)/security"
+
       TRIVY_VERSION='0.72.0'
       curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 \
         -o /tmp/trivy.tar.gz \
         "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
       tar -xzf /tmp/trivy.tar.gz -C /tmp trivy
       chmod +x /tmp/trivy
+
+      JSON_REPORT="$(Build.ArtifactStagingDirectory)/security/trivy-fs.json"
+      SARIF_REPORT="$(Build.ArtifactStagingDirectory)/security/trivy-fs.sarif"
+      TARGET_DIR="$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
+
+      rm -f "$JSON_REPORT" "$SARIF_REPORT"
+
+      set +e
       /tmp/trivy fs \
         --scanners vuln \
-        --format sarif \
-        --output "$(Build.ArtifactStagingDirectory)/security/trivy-fs.sarif" \
+        --detection-priority comprehensive \
+        --format json \
+        --output "$JSON_REPORT" \
+        "$TARGET_DIR"
+      scan_rc=$?
+      set -e
+
+      if [ "$scan_rc" -ne 0 ]; then
+        echo "Trivy filesystem scan failed before report generation (exit ${scan_rc})."
+        exit "$scan_rc"
+      fi
+
+      if [ ! -s "$JSON_REPORT" ]; then
+        echo "Trivy did not produce a JSON report at $JSON_REPORT."
+        exit 1
+      fi
+
+      /tmp/trivy convert \
+        --scanners vuln \
         --severity HIGH,CRITICAL \
-        --exit-code 1 \
-        "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
+        --format table \
+        "$JSON_REPORT"
+
+      /tmp/trivy convert \
+        --scanners vuln \
+        --severity HIGH,CRITICAL \
+        --format sarif \
+        --output "$SARIF_REPORT" \
+        "$JSON_REPORT"
+
+      findings_count="$(
+        python - "$JSON_REPORT" <<'PY'
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+
+report_path = Path(sys.argv[1])
+report = json.loads(report_path.read_text())
+
+findings = []
+for result in report.get("Results") or []:
+    target = result.get("Target") or report.get("ArtifactName") or "unknown target"
+    for vuln in result.get("Vulnerabilities") or []:
+        severity = (vuln.get("Severity") or "").upper()
+        if severity in {"HIGH", "CRITICAL"}:
+            findings.append((target, vuln))
+
+if not findings:
+    print(0)
+    raise SystemExit(0)
+
+print(len(findings))
+print("")
+print(f"Trivy policy findings: {len(findings)} HIGH/CRITICAL vulnerability(s).")
+
+by_target = {}
+for target, vuln in findings:
+    by_target.setdefault(target, []).append(vuln)
+
+for target, vulns in by_target.items():
+    counts = Counter((v.get("Severity") or "UNKNOWN").upper() for v in vulns)
+    severity_parts = [f"{severity}: {counts[severity]}" for severity in ("CRITICAL", "HIGH") if counts[severity]]
+    print(f"- {target} ({', '.join(severity_parts)})")
+
+    for vuln in vulns[:5]:
+        vuln_id = vuln.get("VulnerabilityID") or "unknown-id"
+        pkg_name = vuln.get("PkgName") or vuln.get("PkgID") or "unknown package"
+        installed = vuln.get("InstalledVersion") or "unknown version"
+        fixed = vuln.get("FixedVersion") or "unfixed"
+        title = vuln.get("Title") or ""
+
+        line = f"  - {vuln_id} | {pkg_name} | installed: {installed} | fixed: {fixed}"
+        print(line)
+        if title:
+            print(f"    {title}")
+
+    remaining = len(vulns) - 5
+    if remaining > 0:
+        print(f"  - ... {remaining} more")
+PY
+      )"
+
+      findings_total="$(printf '%s\n' "$findings_count" | head -n1)"
+      if [ "$findings_total" -gt 0 ]; then
+        echo
+        echo "$findings_count" | tail -n +2
+        echo
+        echo "SARIF report written to: $SARIF_REPORT"
+        exit 1
+      fi
+
+      echo
+      echo "Trivy policy findings: 0 HIGH/CRITICAL vulnerability(s)."
+      echo "SARIF report written to: $SARIF_REPORT"
     displayName: 'Trivy filesystem scan'
 
   # ── Docker (optional) ──────────────────────────────────────────
