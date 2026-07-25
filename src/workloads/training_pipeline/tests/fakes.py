@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import IO
 
+from azure.core.exceptions import ResourceNotFoundError
+
 
 class FakeDownloadStream:
     """Simulates an Azure ``StorageStreamDownloader`` – returns bytes via ``readall()``."""
@@ -27,7 +29,9 @@ class FakeBlobClient:
         self._container = container
 
     def download_blob(self) -> FakeDownloadStream:
-        data = self._container._blobs.get(self._name, b"")
+        if self._name not in self._container._blobs:
+            raise ResourceNotFoundError(f"Blob {self._name} not found")
+        data = self._container._blobs[self._name]
         return FakeDownloadStream(data)
 
     def upload_blob(

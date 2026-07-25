@@ -276,8 +276,7 @@ def test_full_elt_pipeline_with_fake(ci_sample_frame, monkeypatch):
     assert checkpoint is not None, "Checkpoint was not written"
     assert checkpoint["status"] == "COMPLETED"
 
-    # Also verify the clean parquet was stored (optional)
-    # Since download_blob_to_tempfile expects a real path, we can just check the fake.
+    # Also verify the clean parquet was stored
     clean_blobs = fake_client._containers.get("clean", {})
     assert "clean/monthly/batch.parquet" in clean_blobs
 

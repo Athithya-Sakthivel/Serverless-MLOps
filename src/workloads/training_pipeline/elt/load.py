@@ -48,7 +48,10 @@ def read_checkpoint(
     blob_service_client: Any = None,
     credential: TokenCredential | None = None,
 ) -> dict[str, Any] | None:
-    """Read the ELT checkpoint JSON blob if it exists."""
+    """Read the ELT checkpoint JSON blob if it exists.
+
+    Returns ``None`` when the blob is missing **or** empty (e.g. a failed write).
+    """
     if blob_service_client is None:
         blob_service_client = build_blob_service_client(storage_account_name, credential=credential)
 
@@ -58,9 +61,16 @@ def read_checkpoint(
 
     try:
         downloader = blob_client.download_blob()
-        return json.loads(downloader.readall().decode("utf-8"))
+        payload = downloader.readall()
     except ResourceNotFoundError:
         return None
+
+    # Guard against zero‑byte checkpoints left by partial writes.
+    if not payload:
+        LOG.warning("Checkpoint blob is empty: %s", raw_blob_name)
+        return None
+
+    return json.loads(payload.decode("utf-8"))
 
 
 def write_checkpoint(
