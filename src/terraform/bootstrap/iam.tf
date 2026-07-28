@@ -1,15 +1,6 @@
 # ------------------------------------------------------------------------------
 # Azure identities, Azure DevOps WIF service connections, Azure RBAC, and
 # Microsoft Entra directory role assignment.
-#
-# This file is written to match current provider schemas:
-# - azuredevops_serviceendpoint_azurerm exposes workload_identity_federation_issuer
-#   and workload_identity_federation_subject as computed outputs.
-# - azuread_application_federated_identity_credential uses application_id,
-#   audiences, issuer, subject, and optional description.
-# - azurerm_role_definition supports permissions blocks with actions, not_actions,
-#   data_actions, and not_data_actions, and exports role_definition_resource_id.
-# - azuread_directory_role_assignment uses role_id + principal_object_id.
 # ------------------------------------------------------------------------------
 
 data "azuread_client_config" "current" {}
@@ -54,9 +45,6 @@ resource "azuread_service_principal" "cd" {
 # ------------------------------------------------------------------------------
 # Azure DevOps service connections using workload identity federation
 # ------------------------------------------------------------------------------
-# These are intentionally created before the federated credentials that consume
-# their computed issuer/subject outputs.
-# ------------------------------------------------------------------------------
 resource "azuredevops_serviceendpoint_azurerm" "ci" {
   project_id                             = azuredevops_project.this.id
   service_endpoint_name                  = local.ci_service_connection_name
@@ -85,10 +73,6 @@ resource "azuredevops_serviceendpoint_azurerm" "cd" {
 
 # ------------------------------------------------------------------------------
 # Federated Identity Credentials
-# ------------------------------------------------------------------------------
-# Wire the Entra application federated credential to the Azure DevOps outputs.
-# Microsoft now uses the Entra issuer for new WIF service connections, and the
-# Azure DevOps provider exposes the issuer/subject values for this purpose.
 # ------------------------------------------------------------------------------
 resource "azuread_application_federated_identity_credential" "ci" {
   application_id = azuread_application.ci.id
@@ -145,6 +129,11 @@ resource "azurerm_role_definition" "ci_containerapp_secrets" {
   }
 
   assignable_scopes = [data.azurerm_subscription.current.id]
+
+  # Prevent 409 Conflict when the role already exists from a previous bootstrap
+  lifecycle {
+    ignore_changes = [name]
+  }
 }
 
 resource "azurerm_role_assignment" "ci_containerapp_secrets" {
@@ -153,7 +142,7 @@ resource "azurerm_role_assignment" "ci_containerapp_secrets" {
   principal_id       = azuread_service_principal.ci.object_id
 }
 
-# CI needs to read Entra ID applications during plan (for azuread_application data sources)
+# CI needs to read Entra ID applications during plan
 resource "azuread_directory_role_assignment" "ci_directory_reader" {
   role_id             = "88d8e3e3-8f55-4a1e-953a-9b9898b8876b" # Directory Readers
   principal_object_id = azuread_service_principal.ci.object_id
@@ -197,6 +186,7 @@ resource "azuread_directory_role_assignment" "cd_app_admin" {
   role_id             = azuread_directory_role.application_administrator.template_id
   principal_object_id = azuread_service_principal.cd.object_id
 }
+
 # ------------------------------------------------------------------------------
 # Key Vault Secrets User – grants both CI and CD permission to read the PAT
 # from the bootstrap Key Vault at pipeline runtime.

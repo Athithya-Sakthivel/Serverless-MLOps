@@ -2,7 +2,9 @@
 # CI – Terraform Plan & Validate
 #
 # Runs `tofu plan` – does NOT apply.  Publishes plan artifact for audit.
-# The Azure DevOps PAT is fetched from Key Vault at runtime.
+# Uses the `terraform-vars` variable group (created by bootstrap) for the
+# Azure DevOps PAT and organisation URL.  No Key Vault fetch is needed at
+# this stage; the PAT is already stored as a secret in the variable group.
 # ---------------------------------------------------------------------------
 
 trigger:
@@ -24,34 +26,16 @@ pr:
 pool:
   vmImage: ubuntu-24.04
 
-# ──────────────────────────────────────────────────────────────────────────
-# Non‑secret values come from the Terraform‑managed variable group.
-# Secrets are fetched from Key Vault.
-# ──────────────────────────────────────────────────────────────────────────
 variables:
-  - group: sm-all-vars                              # TF_VAR_location, TF_VAR_alert_email_address, AZDO_ORG_SERVICE_URL
-  - name: kvName
-    value: 'kv-bootstrap-${TF_VAR_subscription_id_suffix}'   # placeholder – actual name set via env or hardcoded
+  - group: terraform-vars          # Created by bootstrap – contains TF_VAR_location,
+                                   # TF_VAR_alert_email_address, AZDO_ORG_SERVICE_URL,
+                                   # and the secret AZDO_PERSONAL_ACCESS_TOKEN
 
 steps:
   - checkout: self
     clean: true
     fetchDepth: 1
 
-  # ------------------------------------------------------------------------
-  # Fetch the Azure DevOps PAT from Key Vault
-  # ------------------------------------------------------------------------
-  - task: AzureKeyVault@2
-    displayName: 'Fetch azdo-pat from Key Vault'
-    inputs:
-      azureSubscription: 'azdo-oidc-ci'             # CI service connection has KV Secrets User role
-      KeyVaultName: $(kvName)
-      SecretsFilter: 'azdo-pat'
-      RunAsPreJob: true                             # secret available to all subsequent tasks
-
-  # ------------------------------------------------------------------------
-  # Run tofu plan
-  # ------------------------------------------------------------------------
   - task: AzureCLI@2
     displayName: 'Terraform plan'
     inputs:
@@ -64,6 +48,7 @@ steps:
         cd "$(Build.SourcesDirectory)/src/terraform/main"
         chmod +x ./run.sh
 
+        # OIDC credentials injected by AzureCLI task
         export ARM_CLIENT_ID="$servicePrincipalId"
         export ARM_TENANT_ID="$tenantId"
         export ARM_OIDC_TOKEN="$idToken"
@@ -73,13 +58,11 @@ steps:
 
         ./run.sh --plan --env staging
     env:
-      # Inject non‑secret config and the PAT (fetched from Key Vault) into the shell
+      # Inject non‑secret config and the PAT from the variable group into the shell
       AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
-      AZDO_PERSONAL_ACCESS_TOKEN: $(azdo-pat)
+      AZDO_PERSONAL_ACCESS_TOKEN: $(AZDO_PERSONAL_ACCESS_TOKEN)
 
-  # ------------------------------------------------------------------------
-  # Publish plan for audit (CD does NOT use this – it runs its own plan+apply)
-  # ------------------------------------------------------------------------
+  # Publish plan for audit – CD does NOT use this artifact
   - task: PublishPipelineArtifact@1
     displayName: 'Publish Terraform plan (audit only)'
     condition: succeededOrFailed()

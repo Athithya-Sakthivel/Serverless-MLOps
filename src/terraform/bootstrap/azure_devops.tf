@@ -108,3 +108,17 @@ resource "azuredevops_pipeline_authorization" "terraform_cd_environment" {
   type        = "environment"
   pipeline_id = azuredevops_build_definition.pipeline["terraform_cd"].id
 }
+
+resource "azuredevops_pipeline_authorization" "terraform_ci_variablegroup" {
+  project_id  = azuredevops_project.this.id
+  resource_id = azuredevops_variable_group.terraform_vars.id
+  type        = "variablegroup"
+  pipeline_id = azuredevops_build_definition.pipeline["terraform_ci"].id
+}
+
+resource "azuredevops_pipeline_authorization" "terraform_cd_variablegroup" {
+  project_id  = azuredevops_project.this.id
+  resource_id = azuredevops_variable_group.terraform_vars.id
+  type        = "variablegroup"
+  pipeline_id = azuredevops_build_definition.pipeline["terraform_cd"].id
+}

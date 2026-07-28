@@ -1,7 +1,9 @@
 # ---------------------------------------------------------------------------
 # CD – Terraform Apply (manual trigger)
 #
-# Applies the exact plan from CI.  No re‑plan.  PAT fetched from Key Vault.
+# Applies the infrastructure using the plan generated in CI.
+# Uses the `terraform-vars` variable group for credentials.
+# Triggered manually with approval from the "staging" environment.
 # ---------------------------------------------------------------------------
 
 trigger: none                                      # Manual only
@@ -17,14 +19,12 @@ pool:
   vmImage: ubuntu-24.04
 
 variables:
-  - group: sm-all-vars
-  - name: kvName
-    value: 'kv-bootstrap-${TF_VAR_subscription_id_suffix}'   # adjust as needed
+  - group: terraform-vars          # Same variable group as CI; includes PAT and org URL
 
 jobs:
   - deployment: apply_terraform
     displayName: 'Plan and apply Terraform'
-    environment: staging                          # requires manual approval defined in Azure DevOps
+    environment: staging          # Requires manual approval defined in Azure DevOps
     strategy:
       runOnce:
         deploy:
@@ -33,20 +33,7 @@ jobs:
               clean: true
               fetchDepth: 1
 
-            # ----------------------------------------------------------------
-            # Fetch the Azure DevOps PAT
-            # ----------------------------------------------------------------
-            - task: AzureKeyVault@2
-              displayName: 'Fetch azdo-pat from Key Vault'
-              inputs:
-                azureSubscription: 'azdo-oidc-cd'
-                KeyVaultName: $(kvName)
-                SecretsFilter: 'azdo-pat'
-                RunAsPreJob: true
-
-            # ----------------------------------------------------------------
-            # Phase 1 – Infrastructure only (skip ACA)
-            # ----------------------------------------------------------------
+            # Phase 1 – Deploy everything EXCEPT Container Apps
             - task: AzureCLI@2
               displayName: 'Phase 1 – Infrastructure (skip ACA)'
               inputs:
@@ -69,11 +56,9 @@ jobs:
                   ./run.sh --create --env staging --skip-aca
               env:
                 AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
-                AZDO_PERSONAL_ACCESS_TOKEN: $(azdo-pat)
+                AZDO_PERSONAL_ACCESS_TOKEN: $(AZDO_PERSONAL_ACCESS_TOKEN)
 
-            # ----------------------------------------------------------------
-            # Phase 2 – Full deploy including ACA (environment is warm)
-            # ----------------------------------------------------------------
+            # Phase 2 – Full deploy including Container Apps
             - task: AzureCLI@2
               displayName: 'Phase 2 – Full deploy with ACA'
               inputs:
@@ -96,4 +81,4 @@ jobs:
                   ./run.sh --create --env staging
               env:
                 AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
-                AZDO_PERSONAL_ACCESS_TOKEN: $(azdo-pat)
+                AZDO_PERSONAL_ACCESS_TOKEN: $(AZDO_PERSONAL_ACCESS_TOKEN)

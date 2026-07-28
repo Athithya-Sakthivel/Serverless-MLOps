@@ -33,4 +33,3 @@ resource "azuredevops_variable_group" "terraform_vars" {
     is_secret    = true
   }
 }
-

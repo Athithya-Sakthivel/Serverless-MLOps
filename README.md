@@ -98,7 +98,7 @@ export TF_VAR_location=  # example southindia
 export TF_VAR_alert_email_address=  # example athithya651@gmail.com
 
 bash src/terraform/bootstrap/bootstrap.sh --create
-sleep 20
+sleep 5
 git add . && git commit -m "bootstrap extend" && git push origin main
 
 ```
