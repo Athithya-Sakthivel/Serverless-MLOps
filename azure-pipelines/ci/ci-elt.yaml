@@ -1,4 +1,9 @@
-# ELT CI pipeline – triggers on changes to ELT code or shared template.
+# ---------------------------------------------------------------------------
+# CI – ELT (Extract, Load, Transform)
+#
+# Fast validation of data pipeline code.  No Docker build, no deployment.
+# ---------------------------------------------------------------------------
+
 trigger:
   batch: true
   branches:
@@ -10,7 +15,6 @@ trigger:
       - src/workloads/training_pipeline/utils/**
       - src/workloads/training_pipeline/main.py
       - src/workloads/training_pipeline/tests/test_elt.py
-      - src/workloads/training_pipeline/requirements-ci.txt
       - azure-pipelines/ci/ci-elt.yaml
       - azure-pipelines/templates/python-ci.yaml
 
@@ -22,12 +26,13 @@ pr:
 pool:
   vmImage: ubuntu-24.04
 
+# ──────────────────────────────────────────────────────────────────────────
+# All non‑secret configuration is in sm‑all‑vars (populated by Terraform).
+# ──────────────────────────────────────────────────────────────────────────
 variables:
-  - group: elt-ci-vars
+  - group: sm-all-vars
 
 steps:
-  # Absolute path ensures the template is always found regardless of
-  # where the calling pipeline resides.
   - template: /azure-pipelines/templates/python-ci.yaml
     parameters:
       serviceDirectory: 'src/workloads/training_pipeline'

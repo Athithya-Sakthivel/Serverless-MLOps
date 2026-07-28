@@ -1,3 +1,7 @@
+# ------------------------------------------------------------------------------
+# Bootstrap input variables
+# ------------------------------------------------------------------------------
+
 variable "AZDO_ORG_SERVICE_URL" {
   description = "Azure DevOps organization URL, for example https://dev.azure.com/contoso"
   type        = string
@@ -14,7 +18,7 @@ variable "AZDO_ORGANIZATION_NAME" {
 }
 
 variable "AZDO_PERSONAL_ACCESS_TOKEN" {
-  description = "Azure DevOps PAT used by the provider."
+  description = "Azure DevOps PAT used by the provider and stored in Key Vault."
   type        = string
   sensitive   = true
 
@@ -22,6 +26,12 @@ variable "AZDO_PERSONAL_ACCESS_TOKEN" {
     condition     = length(trimspace(var.AZDO_PERSONAL_ACCESS_TOKEN)) > 0
     error_message = "AZDO_PERSONAL_ACCESS_TOKEN must not be empty."
   }
+}
+
+variable "azdo_personal_access_token" {
+  description = "Same PAT value, dedicated to the Key Vault secret."
+  type        = string
+  sensitive   = true
 }
 
 variable "AZDO_GITHUB_SERVICE_CONNECTION_PAT" {
@@ -75,18 +85,19 @@ variable "github_repo" {
   }
 }
 
-# Variables for the terraform-vars variable group.
-# These are consumed by variable_group_for_tf_main.tf.
-# Set them via TF_VAR_location and TF_VAR_alert_email_address in the environment.
-
 variable "location" {
-  description = "Azure region for the main Terraform deployment."
+  description = "Azure region for the bootstrap resources (Key Vault, state RG)."
   type        = string
   default     = "southindia"
 }
 
+variable "state_rg" {
+  description = "Name of the resource group that holds the bootstrap state storage and Key Vault."
+  type        = string
+}
+
 variable "alert_email_address" {
-  description = "Email address for Azure Monitor alerts."
+  description = "Email address for Azure Monitor alerts (used in the terraform-vars group)."
   type        = string
   default     = "athithya651@gmail.com"
 }

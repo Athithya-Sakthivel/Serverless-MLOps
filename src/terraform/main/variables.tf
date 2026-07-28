@@ -147,3 +147,13 @@ variable "ado_client_id" {
   description = "Azure DevOps CI service principal client ID (for remote state access)."
   type        = string
 }
+
+variable "bootstrap_key_vault_name" {
+  description = "Name of the bootstrap Key Vault."
+  type        = string
+}
+
+variable "bootstrap_state_rg" {
+  description = "Resource group of the bootstrap state storage (and the bootstrap Key Vault)."
+  type        = string
+}

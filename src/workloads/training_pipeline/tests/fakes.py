@@ -12,13 +12,27 @@ from azure.core.exceptions import ResourceNotFoundError
 
 
 class FakeDownloadStream:
-    """Simulates an Azure ``StorageStreamDownloader`` – returns bytes via ``readall()``."""
+    """Simulates an Azure ``StorageStreamDownloader`` – returns bytes via ``readall()``
+    and writes into a buffer via ``readinto()``."""
 
     def __init__(self, data: bytes) -> None:
         self._data = data
 
     def readall(self) -> bytes:
         return self._data
+
+    def readinto(self, buf: bytearray | memoryview | object) -> int:
+        """Write the full blob content into *buf* and return the number of bytes written.
+
+        Handles both in‑memory buffers (``bytearray``, ``memoryview``) and
+        file‑like objects (``BufferedWriter``, etc.) via slice assignment or ``write()``.
+        """
+        n = len(self._data)
+        if isinstance(buf, (bytearray, memoryview)):
+            buf[:n] = self._data
+        else:
+            buf.write(self._data)  # type: ignore[union-attr]
+        return n
 
 
 class FakeBlobClient:
@@ -70,7 +84,6 @@ class FakeContainerClient:
         self.get_blob_client(name).upload_blob(data, overwrite=overwrite)
 
     def create_container(self) -> None:
-        """No‑op – container is created automatically on first upload."""
         pass
 
 

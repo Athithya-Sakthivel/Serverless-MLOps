@@ -24,7 +24,8 @@ export SUBSCRIPTION_SUFFIX="${AZURE_SUBSCRIPTION_ID: -6}"
 export STATE_RG="rg-sm-state-${SUBSCRIPTION_SUFFIX}"
 export STATE_STORAGE_ACC_NAME="smstatesa${SUBSCRIPTION_SUFFIX}"
 export STATE_TF_CONTAINER_NAME="tfbackend"
-export TF_VAR_region="centralindia"
+export TF_VAR_location="centralindia"
+export TF_VAR_state_rg="$STATE_RG"
 
 export TZ="Asia/Kolkata"
 export TF_IN_AUTOMATION="true"
@@ -238,7 +239,7 @@ delete_azdo_resources() {
 
 ACTION="${1:-}"
 FLAG="${2:-}"
-LOCATION="${TF_VAR_region:-centralindia}"
+LOCATION="${TF_VAR_location:-centralindia}"
 
 case "$ACTION" in
   --create|--delete) ;;
@@ -328,6 +329,7 @@ export TF_VAR_project_name="$PROJECT_NAME"
 export TF_VAR_service_endpoint_name="$SERVICE_ENDPOINT_NAME"
 export TF_VAR_github_owner="$GITHUB_OWNER"
 export TF_VAR_github_repo="$GITHUB_REPO"
+export TF_VAR_azdo_personal_access_token="$TF_VAR_AZDO_PERSONAL_ACCESS_TOKEN"
 
 BACKEND_HCL="$(mktemp)"
 trap 'rm -f "$BACKEND_HCL"' EXIT

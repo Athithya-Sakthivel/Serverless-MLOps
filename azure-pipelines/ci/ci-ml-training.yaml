@@ -1,9 +1,8 @@
 # ---------------------------------------------------------------------------
-# CI pipeline for the ML training workload.
+# CI – Machine Learning Training Code
 #
-# Triggers when training code, shared utilities, tests, or the CI script
-# change. Uses the same Python version as the container (3.14).
-# The smoke test step is commented out until Azure/MLflow mocks are in place.
+# Validates the complete training pipeline (ELT + model code) with all tests.
+# No Docker build, no deployment.
 # ---------------------------------------------------------------------------
 
 trigger:
@@ -20,7 +19,6 @@ trigger:
       - src/workloads/training_pipeline/tests/**
       - azure-pipelines/ci/ci-ml-training.yaml
       - azure-pipelines/templates/python-ci.yaml
-      - src/scripts/python_ci.sh
 
 pr:
   branches:
@@ -31,7 +29,7 @@ pool:
   vmImage: ubuntu-24.04
 
 variables:
-  - group: ml-ci-vars
+  - group: sm-all-vars
 
 steps:
   - template: /azure-pipelines/templates/python-ci.yaml
@@ -41,5 +39,4 @@ steps:
       requirementsFile: 'src/workloads/training_pipeline/requirements-ci.txt'
       devRequirementsFile: 'src/workloads/training_pipeline/requirements-ci.txt'
       includeDocker: false
-      # preTestSteps intentionally empty – add smoke test only after mocking
-      # Azure and MLflow dependencies.
+      # preTestSteps intentionally empty – smoke test only after mocking

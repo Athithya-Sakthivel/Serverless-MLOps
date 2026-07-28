@@ -29,3 +29,13 @@ output "pipeline_names" {
 output "github_repository_full_name" {
   value = local.github_repo_id
 }
+
+output "key_vault_name" {
+  description = "Bootstrap Key Vault name – used by the main Terraform stack."
+  value       = azurerm_key_vault.bootstrap.name
+}
+
+output "key_vault_id" {
+  description = "Bootstrap Key Vault resource ID."
+  value       = azurerm_key_vault.bootstrap.id
+}

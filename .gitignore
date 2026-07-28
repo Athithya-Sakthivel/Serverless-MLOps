@@ -234,5 +234,5 @@ tfplan
 .plans
 .env
 data
-
+.tf_outputs
 .venv1

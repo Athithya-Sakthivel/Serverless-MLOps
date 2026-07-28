@@ -1,9 +1,9 @@
 # Azure Pipelines – Serverless MLOps CI/CD
 
 Continuous integration and delivery for the **Serverless‑MLOps** system.  
-Pipelines are organised by code‑change domain: data transformation (ELT), model training, and model serving. Training and serving share infrastructure but are validated and deployed independently.
-
----
+Pipelines are organised by domain: data transformation (ELT), model training, model
+serving, and infrastructure. Training and serving code are validated independently
+but share infrastructure where appropriate.
 
 ## Directory structure
 
@@ -25,110 +25,143 @@ azure-pipelines/
 └── README.md
 ```
 
----
-
 ## Pipeline inventory
 
-### CI pipelines
+### CI pipelines – code validation only (no Docker build, no deployment)
 
 | Pipeline | Trigger (paths) | Purpose |
 |----------|-----------------|---------|
-| `ci-elt.yaml` | `src/workloads/training_pipeline/elt/**`<br>`src/workloads/training_pipeline/utils/**` | Ruff lint, basedpyright, pytest for ELT |
-| `ci-ml-training.yaml` | `src/workloads/training_pipeline/train/**`<br>`src/workloads/training_pipeline/utils/**` | Ruff lint, basedpyright, pytest for training |
+| `ci-elt.yaml` | `src/workloads/training_pipeline/elt/**`<br>`src/workloads/training_pipeline/utils/**` | Ruff lint, basedpyright, **ELT unit tests only** |
+| `ci-ml-training.yaml` | `src/workloads/training_pipeline/train/**`<br>`src/workloads/training_pipeline/utils/**`<br>`src/workloads/training_pipeline/tests/**` | Ruff lint, basedpyright, **all 56 tests** (ELT + training) |
 | `ci-service.yaml` | `src/workloads/serving/**` | Ruff lint, basedpyright, pytest for serving app |
-| `ci-terraform.yaml` | `src/terraform/main/**` | tofu fmt, validate, plan |
-| `full_repo_security_scan.yaml` | Push to `main` (batched) | SAST, secrets detection, vulnerability scan |
+| `ci-terraform.yaml` | `src/terraform/main/**` | `tofu fmt`, validate, plan; publishes plan artifact (audit only) |
+| `full_repo_security_scan.yaml` | Push to `main` (batched) | OpenGrep SAST, Gitleaks secrets, Trivy vulnerability scan |
 
-### CD pipelines
+All Python CI pipelines use the reusable `python-ci.yaml` template, which also runs
+`pip-audit` and a Trivy filesystem scan (HIGH/CRITICAL severity). No Docker images
+are built in CI – that is left to the CD pipelines.
+
+### CD pipelines – build, scan, deploy
 
 | Pipeline | Trigger | Purpose |
 |----------|---------|---------|
-| `cd-training-job.yaml` | CI success on `main` (training paths) | Deploy training container to ACA Job |
-| `cd-service.yaml` | CI success on `main` (serving paths) | Deploy serving container to ACA App |
-| `cd-terraform.yaml` | Manual only | Apply the exact plan artifact from `ci-terraform` |
-
----
+| `cd-training-job.yaml` | **Both** `ci-elt` **and** `ci-ml-training` success on `main` | Build training container image (ELT + training code), scan with Trivy, push to ACR, update ACA Job in staging; after manual approval, promote to production |
+| `cd-service.yaml` | `ci-service` success on `main`, **or** manual trigger (model promotion) | Build serving image (code changes only), or update model version via environment variable. Performs **canary deployment** using `src/scripts/canary-deploy.sh` (revision‑based traffic splitting, k6 load tests, automatic rollback). |
+| `cd-terraform.yaml` | **Manual only** | Apply the exact plan artifact from `ci-terraform`. Fetches `azdo-pat` from Key Vault. |
 
 ## Templates
 
 | Template | Used by | Purpose |
 |----------|---------|---------|
-| `python-ci.yaml` | `ci-elt.yaml`, `ci-ml-training.yaml`, `ci-service.yaml` | Ruff lint, basedpyright type-check, pytest, Trivy FS scan |
-| `aca-deploy.yaml` | `cd-training-job.yaml`, `cd-service.yaml` | Update Azure Container App Job/App image |
+| `python-ci.yaml` | all `ci-*` Python pipelines | Ruff, basedpyright, pytest, pip‑audit, Trivy FS scan |
+| `aca-deploy.yaml` | `cd-training-job.yaml` only | Update Azure Container App Job image |
 
----
+The serving CD pipeline calls an external script (`canary-deploy.sh`) rather than
+using a heavy YAML template – this keeps the pipeline definition minimal and all
+complex logic testable outside Azure DevOps.
 
 ## Agent pool
 
 All pipelines run on **Microsoft‑hosted** `ubuntu-24.04` agents.  
 No private network or self‑hosted infrastructure is required.
 
----
+## Variable groups & secrets
+
+### Variable group (non‑secrets)
+
+A single variable group **`sm-all-vars`** is populated by Terraform (module
+`azure_devops`) and contains every non‑secret configuration value the pipelines
+need:
+
+- `AZURE_STORAGE_ACCOUNT_NAME`
+- `MLFLOW_TRACKING_URI`
+- `RAW_CONTAINER_NAME`, `CLEAN_CONTAINER_NAME`, `CHECKPOINT_CONTAINER_NAME`
+- `containerRegistry`
+- `CONTAINER_APP_JOB_NAME`, `CONTAINER_APP_NAME`
+- `STAGING_RG`, `PROD_RG`
+- `azureServiceConnection`
+
+No secrets are stored in variable groups.
+
+### Secrets
+
+The only persistent secret in the system is the **Azure DevOps PAT**, stored in
+**Azure Key Vault** as `azdo-pat`. Both CI and CD pipelines that require the PAT
+(e.g., `ci-terraform`, `cd-terraform`) fetch it at runtime using the
+`AzureKeyVault@2` task:
+
+```yaml
+- task: AzureKeyVault@2
+  inputs:
+    azureSubscription: 'azdo-oidc-cd'
+    KeyVaultName: $(kvName)
+    SecretsFilter: 'azdo-pat'
+```
+
+The PAT is then injected into the task’s environment via an `env:` block.
+It never appears in logs or pipeline definitions.
+
+All Azure‑to‑Azure authentication uses **OIDC federation** – no client secrets
+or connection strings are stored anywhere.
 
 ## Key design decisions
 
-- **Separate CI by domain** – ELT, training, and serving code are validated independently with path‑specific triggers for fast feedback.
-- **Separate CD per workload** – Training job and serving app deploy independently. A training code change does not redeploy the serving container, and vice versa.
-- **Immutable deployments** – Container images tagged with Git commit SHA, never `latest`.
-- **Plan‑apply separation** – `ci-terraform` validates and publishes a plan artifact; `cd-terraform` applies that exact artifact with no re‑plan.
-- **Trunk‑based development** – Only `main` and short‑lived `feat/*` branches. Environment differences via `.tfvars`.
-- **Secrets never in pipelines** – Authentication uses OIDC federation. Code uses `DefaultAzureCredential` (Managed Identity / workload identity). No connection strings in variables.
-- **Serverless cost model** – Container App Jobs and Apps scale to zero. Pipelines themselves have zero infrastructure cost outside of execution minutes.
-
----
-
-## Conventions
-
-- File extension `.yaml` (not `.yml`).
-- Template references use `azure-pipelines/templates/` relative path.
-- All pipelines declare `pool: vmImage: ubuntu-24.04` at the top level.
-- Path triggers include the pipeline definition itself and shared templates.
-- Service connections use OIDC, named `azdo-oidc-ci` (CI) and `azdo-oidc-cd` (CD).
-- Environment variables injected via Azure DevOps variable groups – never hard‑coded.
-
----
-
-## Variable groups
-
-| Variable group | Contains |
-|----------------|----------|
-| `elt-ci-vars` | `AZURE_STORAGE_ACCOUNT_NAME`, `MLFLOW_TRACKING_URI`, container names, `azureServiceConnection` |
-| `ml-ci-vars` | `MLFLOW_TRACKING_URI`, `containerRegistry`, `azureServiceConnection` |
-| `service-ci-vars` | `containerRegistry`, `azureServiceConnection` |
-| `terraform-ci-vars` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` |
-| `terraform-cd-vars` | Same as terraform‑ci |
-| `deployment-vars` | `containerRegistry`, `azureServiceConnection`, `CONTAINER_APP_JOB_NAME`, `CONTAINER_APP_NAME`, staging/production resource groups |
-
----
+- **Separate CI by domain** – ELT, training, and serving code are validated
+  independently with path‑specific triggers for fast feedback.
+- **One CD per domain** – Both ELT and training changes trigger the same training
+  CD (they share one container image). Serving has its own CD. Infrastructure
+  CD is manual.
+- **Docker build in CD only** – CI never builds images. CD builds, scans, and
+  deploys.
+- **Canary deployments for serving** – A separate script (`canary-deploy.sh`)
+  creates a new revision at 0 % traffic, validates it in isolation using the
+  revision’s private FQDN and k6 load tests, then gradually shifts traffic.
+  Automatic rollback if any threshold is violated.
+- **Model updates without image rebuild** – New model versions are deployed by
+  updating the `MODEL_VERSION` environment variable on the serving Container App.
+  The serving image itself only changes when serving code changes.
+- **Immutable deployments** – Container images tagged with Git commit SHA, never
+  `latest`.
+- **Plan‑apply separation** – `ci-terraform` validates and publishes a plan
+  artifact; `cd-terraform` applies that exact artifact with no re‑plan.
+- **Trunk‑based development** – Only `main` and short‑lived `feat/*` branches.
+  Environment differences via `.tfvars`.
+- **Secrets in Key Vault, config in variable group** – Clear boundary between
+  sensitive and non‑sensitive values.
+- **Serverless cost model** – Container App Jobs and Apps scale to zero.
+  Pipelines have zero infrastructure cost outside of execution minutes.
 
 ## How to run
 
-1. **Push to `src/workloads/training_pipeline/elt/`** → `ci-elt` runs: lint → type‑check → ELT unit tests.
-2. **Push to `src/workloads/training_pipeline/train/`** → `ci-ml-training` runs: lint → type‑check → training tests.
-3. **Push to `src/workloads/serving/`** → `ci-service` runs: lint → type‑check → serving tests.
-4. **Push to `src/terraform/main/`** → `ci-terraform` runs: fmt, validate, plan.
-5. **Merge to `main`** – all affected CI pipelines run again. On success, corresponding CD pipelines deploy to staging. After manual approval, promote to production.
-6. **Infrastructure changes** – human manually triggers `cd-terraform` to apply the approved plan.
-
----
+1. **Push to ELT or training code** → `ci-elt` and/or `ci-ml-training` run.
+2. **Push to serving code** → `ci-service` runs.
+3. **Push to Terraform code** → `ci-terraform` runs (fmt, validate, plan).
+4. **Merge to `main`** – all affected CI pipelines run again. On success:
+   - Training CD builds the training image and updates the ACA Job.
+   - Serving CD builds the serving image (if code changed) and runs canary deployment.
+5. **Infrastructure changes** – human manually triggers `cd-terraform`.
+6. **Model promotion** – human (or automation) manually triggers `cd-service`
+   with an updated `MODEL_VERSION`. The canary script validates the new model
+   and rolls it out safely.
 
 ## Security scanning
 
 The `full_repo_security_scan.yaml` pipeline runs on every push to `main` and uses:
 
+- **OpenGrep** – SAST (OWASP Top Ten, Docker, secrets).
 - **Gitleaks** – full‑history secrets detection.
-- **Trivy** – filesystem vulnerability and misconfiguration scan (HIGH, CRITICAL severity).
-- **pip‑audit** – Python dependency vulnerability audit.
+- **Trivy** – filesystem vulnerability and misconfiguration scan (CRITICAL only).
 
-Tool binaries are downloaded with pinned versions and verified at runtime. The scan runs on a clean ephemeral agent with full repository history.
-
----
+Tool binaries are downloaded with pinned versions and verified at runtime. The
+scan runs on a clean ephemeral agent with full repository history.
 
 ## Adding a new workload
 
 1. Place new code under `src/workloads/<new-workload>/`.
-2. Create a new CI pipeline `ci-<workload>.yaml` with appropriate path filters.
-3. Create a new CD pipeline `cd-<workload>.yaml` using the `aca-deploy.yaml` template.
-4. Create a corresponding variable group in Azure DevOps.
+2. Create a CI pipeline `ci-<workload>.yaml` with path filters.
+3. Create a CD pipeline `cd-<workload>.yaml` (reuse `aca-deploy.yaml` for simple
+   updates, or add a dedicated canary script if needed).
+4. Add required variables to `sm-all-vars` (via Terraform).
 5. Update this README.
-6. Ensure the workload follows conventions: `DefaultAzureCredential`, environment variables, scale‑to‑zero if serverless.
+6. Ensure the workload follows conventions: `DefaultAzureCredential`, environment
+   variables, scale‑to‑zero if serverless.

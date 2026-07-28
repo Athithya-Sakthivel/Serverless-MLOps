@@ -103,6 +103,13 @@ git add . && git commit -m "bootstrap extend" && git push origin main
 
 ```
 
+## PHASE 1.3 main terraform
+
+## PHASE 2.1 
+bash src/scripts/other_roles.sh # creates roles required for local dev
+export ARTIFACTS_STORAGE_ACC_NAME="smstgartifactsf41930"
+python3 src/scripts/simulate_data_upload.py
+
 
 <details>
 <summary>▶ Expected outputs</summary>

@@ -28,16 +28,13 @@ variable "workspace_name" {
   }
 }
 
-variable "key_vault_name" {
-  description = "Key Vault name used by the ML workspace."
+# Key Vault (external, centralised)
+variable "key_vault_id" {
+  description = "Resource ID of the central Key Vault used by the ML workspace."
   type        = string
-
-  validation {
-    condition     = can(regex("^[a-z][a-z0-9-]{1,22}[a-z0-9]$", var.key_vault_name))
-    error_message = "key_vault_name must be 3-24 characters, lowercase letters, digits, and hyphens only, and cannot start or end with a hyphen."
-  }
 }
 
+# Dedicated AML storage (HNS disabled)
 variable "ml_storage_account_name" {
   description = "Dedicated storage account name for AML workspace (HNS disabled)."
   type        = string

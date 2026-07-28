@@ -75,3 +75,28 @@ variable "mlflow_tracking_uri" {
   description = "MLflow tracking URI."
   type        = string
 }
+
+variable "container_registry_name" {
+  description = "ACR name."
+  type        = string
+}
+
+variable "train_job_name" {
+  description = "Training Container App Job name."
+  type        = string
+}
+
+variable "serve_app_name" {
+  description = "Serving Container App name."
+  type        = string
+}
+
+variable "staging_resource_group" {
+  description = "Staging resource group name."
+  type        = string
+}
+
+variable "prod_resource_group" {
+  description = "Production resource group name."
+  type        = string
+}

@@ -197,3 +197,18 @@ resource "azuread_directory_role_assignment" "cd_app_admin" {
   role_id             = azuread_directory_role.application_administrator.template_id
   principal_object_id = azuread_service_principal.cd.object_id
 }
+# ------------------------------------------------------------------------------
+# Key Vault Secrets User – grants both CI and CD permission to read the PAT
+# from the bootstrap Key Vault at pipeline runtime.
+# ------------------------------------------------------------------------------
+resource "azurerm_role_assignment" "ci_keyvault_secrets_user" {
+  scope                = azurerm_key_vault.bootstrap.id
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = azuread_service_principal.ci.object_id
+}
+
+resource "azurerm_role_assignment" "cd_keyvault_secrets_user" {
+  scope                = azurerm_key_vault.bootstrap.id
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = azuread_service_principal.cd.object_id
+}

@@ -1,35 +1,10 @@
-# ==============================================================================
-# CD Pipeline – Terraform Apply (Staging)
-# ==============================================================================
-# Triggered automatically when the CI pipeline (terraform-ci) succeeds on main.
-# Deploys the full infrastructure to the staging environment.
+# ---------------------------------------------------------------------------
+# CD – Terraform Apply (manual trigger)
 #
-# Bugs encountered & fixed:
-#   1. ExpiredAuthenticationToken on long-running applies (20+ min).
-#      → Switched to OIDC (ARM_USE_OIDC=true). The Azure SDK auto-refreshes
-#        tokens for OIDC service connections, no manual refresh needed.
-#   2. Container Apps failed with ContainerAppOperationError: Operation expired
-#      because the Azure for Students subscription throttles compute creation.
-#      → Added --skip-aca flag to run.sh. First deploy infrastructure-only,
-#        then a second deploy with Container Apps (environment is warm).
-#   3. Orphaned Container App/Job resources from previous failed applies
-#      caused "resource already exists" errors.
-#      → run.sh now auto-imports orphaned ACA resources before planning,
-#        making the pipeline self-healing.
-#   4. Scheduled Query Rules failed with "insufficient access" on the
-#      student subscription.
-#      → Removed alert rules entirely from alerts.tf (only action group remains).
-#   5. CD service principal (azdo-oidc-cd) couldn't create Entra ID app
-#      registrations for the serving endpoint (403 Forbidden).
-#      → Added Application Administrator directory role assignment to the
-#        CD service principal in bootstrap/iam.tf.
-#   6. CD service principal couldn't list storage account keys to read
-#      remote state.
-#      → Changed the terraform_remote_state data source to use
-#        use_azuread_auth=true instead of access keys.
-# ==============================================================================
+# Applies the exact plan from CI.  No re‑plan.  PAT fetched from Key Vault.
+# ---------------------------------------------------------------------------
 
-trigger: none
+trigger: none                                      # Manual only
 
 resources:
   pipelines:
@@ -42,12 +17,14 @@ pool:
   vmImage: ubuntu-24.04
 
 variables:
-  - group: terraform-vars
+  - group: sm-all-vars
+  - name: kvName
+    value: 'kv-bootstrap-${TF_VAR_subscription_id_suffix}'   # adjust as needed
 
 jobs:
   - deployment: apply_terraform
     displayName: 'Plan and apply Terraform'
-    environment: staging
+    environment: staging                          # requires manual approval defined in Azure DevOps
     strategy:
       runOnce:
         deploy:
@@ -56,12 +33,20 @@ jobs:
               clean: true
               fetchDepth: 1
 
-            # ---------------------------------------------------------------
-            # Phase 1: Deploy everything EXCEPT Container Apps.
-            # This ensures the Container App Environment is provisioned and
-            # warm before Phase 2, avoiding the "Operation expired" timeout
-            # on student subscriptions.
-            # ---------------------------------------------------------------
+            # ----------------------------------------------------------------
+            # Fetch the Azure DevOps PAT
+            # ----------------------------------------------------------------
+            - task: AzureKeyVault@2
+              displayName: 'Fetch azdo-pat from Key Vault'
+              inputs:
+                azureSubscription: 'azdo-oidc-cd'
+                KeyVaultName: $(kvName)
+                SecretsFilter: 'azdo-pat'
+                RunAsPreJob: true
+
+            # ----------------------------------------------------------------
+            # Phase 1 – Infrastructure only (skip ACA)
+            # ----------------------------------------------------------------
             - task: AzureCLI@2
               displayName: 'Phase 1 – Infrastructure (skip ACA)'
               inputs:
@@ -84,15 +69,11 @@ jobs:
                   ./run.sh --create --env staging --skip-aca
               env:
                 AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
-                AZDO_PERSONAL_ACCESS_TOKEN: $(AZDO_PERSONAL_ACCESS_TOKEN)
+                AZDO_PERSONAL_ACCESS_TOKEN: $(azdo-pat)
 
-            # ---------------------------------------------------------------
-            # Phase 2: Full deploy including Container Apps.
-            # The environment is now warm, so ACA provisioning finishes
-            # within the Azure platform timeout.
-            # run.sh auto-imports any orphaned ACA resources from Phase 1
-            # failures, making this step self-healing.
-            # ---------------------------------------------------------------
+            # ----------------------------------------------------------------
+            # Phase 2 – Full deploy including ACA (environment is warm)
+            # ----------------------------------------------------------------
             - task: AzureCLI@2
               displayName: 'Phase 2 – Full deploy with ACA'
               inputs:
@@ -115,4 +96,4 @@ jobs:
                   ./run.sh --create --env staging
               env:
                 AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
-                AZDO_PERSONAL_ACCESS_TOKEN: $(AZDO_PERSONAL_ACCESS_TOKEN)
+                AZDO_PERSONAL_ACCESS_TOKEN: $(azdo-pat)

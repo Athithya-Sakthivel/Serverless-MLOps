@@ -1,3 +1,8 @@
+data "azurerm_key_vault" "bootstrap" {
+  name                = var.bootstrap_key_vault_name
+  resource_group_name = var.bootstrap_state_rg
+}
+
 module "state" {
   source = "./modules/state"
 
@@ -86,6 +91,11 @@ module "aca" {
 
   serve_port = var.aca_serve_port
   tags       = local.common_tags
+
+  container_registry_name  = module.state.acr_name
+  staging_resource_group   = "rg-sm-artifacts-stg"   # or derive from locals
+  prod_resource_group      = "rg-sm-artifacts-prod"
+  app_insights_connection_string = module.observability.application_insights_connection_string
 }
 
 module "azure_devops" {

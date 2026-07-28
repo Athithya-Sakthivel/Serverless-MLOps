@@ -1,0 +1,36 @@
+# ---------------------------------------------------------------------------
+# CI – Serving API
+#
+# Lint, type‑check, and unit tests for the serving application.
+# ---------------------------------------------------------------------------
+
+trigger:
+  batch: true
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - src/workloads/serving/**
+      - azure-pipelines/ci/ci-service.yaml
+      - azure-pipelines/templates/python-ci.yaml
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: ubuntu-24.04
+
+variables:
+  - group: sm-all-vars
+
+steps:
+  - template: /azure-pipelines/templates/python-ci.yaml
+    parameters:
+      serviceDirectory: 'src/workloads/serving'
+      pythonVersion: '3.14'
+      requirementsFile: 'src/workloads/serving/requirements-ci.txt'
+      devRequirementsFile: 'src/workloads/serving/requirements-ci.txt'
+      includeDocker: false

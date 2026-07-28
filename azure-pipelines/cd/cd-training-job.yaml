@@ -1,3 +1,11 @@
+# ---------------------------------------------------------------------------
+# CD – Training Job
+#
+# Triggered by CI success for ELT or training code.
+# Builds the training image (if code changed), scans, pushes to ACR,
+# then updates the ACA Job in staging → manual approval → production.
+# ---------------------------------------------------------------------------
+
 trigger: none
 
 resources:
@@ -22,66 +30,79 @@ parameters:
   - name: deployML
     type: boolean
     default: true
-  - name: modelVersion
-    type: string
-    default: 'latest'
 
 pool:
   vmImage: ubuntu-24.04
 
 variables:
-  - group: 'deployment-vars'
+  - group: sm-all-vars                              # contains CONTAINER_APP_JOB_NAME, containerRegistry, etc.
 
 stages:
-  - stage: staging
-    displayName: 'Staging'
+  - stage: build
+    displayName: 'Build & Push Training Image'
     jobs:
-      - ${{ if parameters.deployELT }}:
-        - template: azure-pipelines/templates/elt-deploy.yaml
-          parameters:
-            functionAppName: '$(FUNCTION_APP_NAME)-staging'
-            resourceGroup: '$(stagingRG)'
-
-      - ${{ if parameters.deployML }}:
-        - job: build_and_deploy_ml_staging
-          displayName: 'Build & deploy ML serving to staging'
+      - ${{ if or(parameters.deployELT, parameters.deployML) }}:
+        - job: build_push
+          displayName: 'Build and push training image'
           steps:
-            - bash: |
-                # Download the MLflow model and build the serving image
-                pip install mlflow azure-ai-ml
-                export MLFLOW_TRACKING_URI="$(MLFLOW_TRACKING_URI)"
-                mlflow models download -m "models:/lead-scoring-onnx/${{ parameters.modelVersion }}" -d ./model
-                # Build Docker image
-                IMAGE="$(containerRegistry).azurecr.io/lead-scoring-api:$(Build.SourceVersion)"
-                docker build -t "$IMAGE" -f src/workloads/train/Dockerfile .
-                az acr login -n "$(containerRegistry)"
-                docker push "$IMAGE"
-                echo "##vso[task.setvariable variable=mlImage]$IMAGE"
-              displayName: 'Build ML serving image'
+            - checkout: self
 
-            - template: azure-pipelines/templates/aca-deploy.yaml
-              parameters:
-                containerAppName: '$(CONTAINER_APP_NAME)-staging'
-                resourceGroup: '$(stagingRG)'
-                image: '$(mlImage)'
+            - task: AzureCLI@2
+              displayName: 'Build & push training container'
+              inputs:
+                azureSubscription: 'azdo-oidc-cd'
+                scriptType: bash
+                scriptLocation: inlineScript
+                inlineScript: |
+                  set -euo pipefail
+
+                  LOGIN_SERVER="$(az acr show --name $(containerRegistry) --query loginServer -o tsv)"
+                  IMAGE_TAG="training-$(Build.SourceVersion)"
+
+                  az acr login -n $(containerRegistry)
+                  docker build \
+                    -f src/workloads/training_pipeline/Dockerfile \
+                    -t "${LOGIN_SERVER}/training:${IMAGE_TAG}" \
+                    .
+                  docker push "${LOGIN_SERVER}/training:${IMAGE_TAG}"
+
+                  echo "##vso[task.setvariable variable=trainingImage;isOutput=true]${LOGIN_SERVER}/training:${IMAGE_TAG}"
+                addSpnToEnvironment: true
+              name: buildOutput
+
+  - stage: staging
+    displayName: 'Deploy to Staging'
+    dependsOn: build
+    jobs:
+      - deployment: deploy_staging
+        displayName: 'Update ACA Job – Staging'
+        environment: staging
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - template: /azure-pipelines/templates/aca-deploy.yaml
+                  parameters:
+                    containerAppJobName: $(CONTAINER_APP_JOB_NAME)      # e.g. acaj-train-stg
+                    resourceGroup: $(STAGING_RG)
+                    image: $[ dependencies.build.outputs['buildOutput.trainingImage'] ]
+                    azureServiceConnection: 'azdo-oidc-cd'
 
   - stage: production
-    displayName: 'Production'
+    displayName: 'Deploy to Production'
     dependsOn: staging
     condition: succeeded()
     jobs:
-      - ${{ if parameters.deployELT }}:
-        - template: azure-pipelines/templates/elt-deploy.yaml
-          parameters:
-            functionAppName: '$(FUNCTION_APP_NAME)'
-            resourceGroup: '$(prodRG)'
-
-      - ${{ if parameters.deployML }}:
-        - job: deploy_ml_production
-          displayName: 'Canary deploy ML to production'
-          steps:
-            - template: azure-pipelines/templates/aca-deploy.yaml
-              parameters:
-                containerAppName: '$(CONTAINER_APP_NAME)'
-                resourceGroup: '$(prodRG)'
-                image: '$(mlImage)'    # reuse the image built in staging
+      - deployment: deploy_prod
+        displayName: 'Update ACA Job – Production'
+        environment: production
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - template: /azure-pipelines/templates/aca-deploy.yaml
+                  parameters:
+                    containerAppJobName: $(CONTAINER_APP_JOB_NAME)-prod   # adjust if naming differs
+                    resourceGroup: $(PROD_RG)
+                    image: $[ dependencies.build.outputs['buildOutput.trainingImage'] ]
+                    azureServiceConnection: 'azdo-oidc-cd'
