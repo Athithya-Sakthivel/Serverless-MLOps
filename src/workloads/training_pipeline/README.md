@@ -1,6 +1,6 @@
 # Training Pipeline — Serverless MLOps on Azure
 
-The training pipeline is a **serverless, event‑driven** workflow that turns raw ACS (American Community Survey) data into a trained LightGBM classifier, exports it to ONNX, logs everything to MLflow, and optionally registers the model in the Azure ML registry. It runs as an **Azure Container Apps Job** triggered by **Event Grid** when a new raw Parquet file lands in Azure Blob Storage.
+The training pipeline is a **serverless, event‑driven** workflow that turns raw ACS (American Community Survey) data into a trained LightGBM classifier, exports it to ONNX, logs everything to MLflow, and automatically registers the model if it passes **quality and performance thresholds**. It then triggers a canary deployment of the serving API. The pipeline runs as an **Azure Container Apps Job** triggered by **Event Grid** when a new raw Parquet file lands in Azure Blob Storage.
 
 The pipeline is **idempotent** – it can be retried safely without duplicating work – and **fully environment‑agnostic** – the same container image works locally, in CI, and in production.
 
@@ -26,12 +26,17 @@ Azure Queue ──► ACA Job starts (main.py)
   │     Training Phase      │
   │ dataset → features      │
   │ → train → evaluate      │
-  │ → ONNX → register       │
+  │ → ONNX + benchmark      │
+  │ → register (if gates)   │
   └───────────┬─────────────┘
               │
               ▼
    MLflow / Azure ML Workspace
    (metrics, model, ONNX)
+              │
+              ▼
+   REST API call to Azure DevOps
+   (triggers serving canary)
 ```
 
 Both phases are guarded by **checkpoints** stored in Azure Blob Storage. If a phase has already completed (`COMPLETED`), it is skipped on subsequent runs.
@@ -53,18 +58,18 @@ src/workloads/training_pipeline/
 │   ├── transform.py         # Clean & standardise data
 │   └── load.py              # Write clean parquet + ELT checkpoint
 │
-├── train/                   # Model training & evaluation
+├── train/                   # Model training, evaluation & export
 │   ├── dataset.py           # Load, target creation, stratified split
 │   ├── features.py          # Feature engineering (numeric + one-hot state)
 │   ├── model.py             # LightGBM classifier training
-│   ├── evaluate.py          # Metrics (AUC, F1, confusion matrix, …)
-│   ├── export.py            # LightGBM → ONNX conversion & verification
+│   ├── evaluate.py          # Quality metrics (AUC, F1, confusion matrix, …)
+│   ├── export.py            # LightGBM → ONNX conversion, verification & benchmarking
 │   ├── register.py          # MLflow model registration (aliases)
 │   ├── checkpoint.py        # Training checkpoint read/write
-│   └── orchestrator.py      # Glues everything together, handles MLflow
+│   └── orchestrator.py      # Glues everything together, handles MLflow, triggers serving CD
 │
 ├── utils/                   # Shared helpers
-│   ├── config.py            # All configuration from environment variables
+│   ├── config.py            # All configuration from environment variables (incl. performance thresholds)
 │   ├── storage.py           # Azure Blob client + upload/download
 │   ├── logging.py           # Structured JSON logging
 │   ├── mlflow.py            # MLflow tracking URI setup
@@ -97,10 +102,10 @@ src/workloads/training_pipeline/
 ### 3. ELT Phase (`_run_elt`)
 
 1. **Read ELT checkpoint** – If a checkpoint with status `"COMPLETED"` already exists for this raw blob, ELT is skipped and the clean blob name is returned immediately.
-2. **Extract** (`read_parquet_from_blob`) – Downloads the raw blob to a temp file, loads it with Polars.
-3. **Validate** (`validate_raw_frame`) – Checks required columns, types, null rates, duplicates, state codes, value ranges. Raises `ValidationError` on hard failures.
-4. **Transform** (`clean_raw_frame`) – Normalises state codes, coerces types, removes rows with nulls/invalid values, deduplicates.
-5. **Load** (`write_clean_frame`) – Writes the clean DataFrame as a Parquet blob to the `clean/` container.
+2. **Extract** – Downloads the raw blob, loads it with Polars.
+3. **Validate** – Checks required columns, types, null rates, duplicates, state codes, value ranges. Raises `ValidationError` on hard failures.
+4. **Transform** – Normalises state codes, coerces types, removes rows with nulls/invalid values, deduplicates.
+5. **Load** – Writes the clean DataFrame as a Parquet blob to the `clean/` container.
 6. **Write ELT checkpoint** – Writes a JSON blob (status `"COMPLETED"`, metrics, timestamps) to `checkpoints/elt/<blob>.json`.
 7. Returns the clean blob name.
 
@@ -109,24 +114,30 @@ src/workloads/training_pipeline/
 1. **Read training checkpoint** – If a checkpoint with status `"COMPLETED"` already exists, returns immediately with the stored MLflow run ID, metrics, etc.
 2. **Write `"RUNNING"` checkpoint** – Marks the training as in progress.
 3. **Data preparation** (inside an MLflow run):
-   - `load_clean_frame` downloads the clean blob.
-   - `create_target_column` adds a binary target based on `PINCP >= threshold`.
-   - `split_dataset` performs a **stratified 70/15/15 split** with a fixed random seed.
-   - `build_feature_bundle` fits a `FeatureTransformer` on the training split and transforms all splits to NumPy arrays.
+   - Loads clean data, creates binary target, performs stratified 70/15/15 split.
+   - Builds feature bundle (numeric + one-hot state) and transforms all splits.
 4. **Class‑balance guard** – If the training split has only one class, a `RuntimeError` is raised immediately.
-5. **Model training** – A LightGBM classifier is built from config and trained with early stopping on the validation AUC.
-6. **Evaluation** – AUC, F1, precision, recall, accuracy, confusion matrix, and prediction latency are computed for validation and test sets.
-7. **MLflow logging** – Metrics, parameters, and tags (git SHA, pipeline run ID, etc.) are logged to the configured Azure ML workspace.
-8. **Model artifact** – The trained model is saved with `joblib` and logged as a MLflow artifact (`model/model.pkl`).
-9. **ONNX export** – The model is converted to ONNX and verified (max probability delta < 1e‑3). The ONNX file and its SHA256 are logged.
-10. **Model registration** – If enabled and promotion thresholds are met, the model is registered in the Azure ML registry via `mlflow.register_model`.
-11. **Write `"COMPLETED"` checkpoint** – All results (run ID, metrics, ONNX SHA256, etc.) are written to `checkpoints/training/<blob>.json`.
-12. If any exception occurs, a `"FAILED"` checkpoint is written (best‑effort) and the exception is re‑raised so the ACA job reports failure.
+5. **Model training** – LightGBM classifier trained with early stopping on validation AUC.
+6. **Evaluation** – AUC, F1, precision, recall, accuracy, confusion matrix, and prediction latency computed for validation and test sets.
+7. **MLflow logging** – Metrics, parameters, and tags (git SHA, pipeline run ID, etc.) logged to the Azure ML workspace.
+8. **Model artifact** – The trained model is saved with `joblib` and logged as a MLflow artifact.
+9. **ONNX export + performance benchmark** – The model is converted to ONNX, verified (max probability delta < 1e‑3), and benchmarked for:
+   - Single‑row inference latency (p50, p95, p99)
+   - Throughput (rows/second)
+   Performance metrics are logged to MLflow.
+10. **Registration gating** – The model is registered **only if**:
+    - **Quality thresholds** are met on the test set (AUC, F1, precision, recall).
+    - **Performance thresholds** are met (p95 latency ≤ threshold, throughput ≥ threshold) – enabled by default.
+    - `ENABLE_MODEL_REGISTRATION` is `true`.
+    On success, the model is registered and the `Staging` alias is assigned.
+11. **Trigger serving CD** – If registration succeeded, the training orchestrator calls the Azure DevOps REST API to trigger the `cd-service` pipeline, passing the new model version. This starts a canary deployment without rebuilding the serving image.
+12. **Write `"COMPLETED"` checkpoint** – All results (run ID, metrics, ONNX SHA256, performance, registration details) are persisted to `checkpoints/training/<blob>.json`.
+13. If any exception occurs, a `"FAILED"` checkpoint is written (best‑effort) and the exception is re‑raised so the ACA job reports failure.
 
 ### 5. Idempotency & Recovery
 
 - **ELT checkpoint**: `"COMPLETED"` means the clean data is present and valid.
-- **Training checkpoint**: `"COMPLETED"` means the model was trained, evaluated, ONNX‑exported, and logged to MLflow.
+- **Training checkpoint**: `"COMPLETED"` means the model was trained, evaluated, ONNX‑exported, benchmarked, and (if eligible) registered.
 - `"RUNNING"` state indicates a previous run died; the next trigger will overwrite it and start fresh.
 - `"FAILED"` state records the error details; retries will re‑run the entire phase.
 
@@ -136,7 +147,7 @@ Because the ACA Job processes messages from a queue, at‑most‑once delivery a
 
 ## Configuration
 
-All settings are read from environment variables.  The following are the most important ones:
+All settings are read from environment variables. The following are the most important ones:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -150,7 +161,10 @@ All settings are read from environment variables.  The following are the most im
 | `TEST_FRACTION` | Fraction for test split | 0.15 |
 | `ENABLE_MODEL_REGISTRATION` | `"true"` to register the model | `false` |
 | `MODEL_NAME` | Registered model name | `acs_income_classifier` |
-| `MIN_AUC`, `MIN_F1`, … | Promotion thresholds | 0.90, 0.85, … |
+| `MIN_AUC`, `MIN_F1`, … | Quality promotion thresholds | 0.90, 0.85, … |
+| `MAX_P95_LATENCY_MS` | Maximum allowed p95 ONNX latency | 5.0 |
+| `MIN_THROUGHPUT_ROWS_PER_SEC` | Minimum ONNX throughput | 1000 |
+| `ENABLE_PERFORMANCE_GATE` | Enforce performance thresholds | `true` |
 | LightGBM hyperparameters | `LIGHTGBM_*` (see `utils/config.py`) | sensible defaults |
 
 No hard‑coded secrets. Authentication always uses `DefaultAzureCredential` (works with `az login` locally, managed identity in ACA, and OIDC in CI).
@@ -161,13 +175,13 @@ No hard‑coded secrets. Authentication always uses `DefaultAzureCredential` (wo
 
 ### Prerequisites
 
-- Python 3.14 (or 3.12 for MLflow 2.x compatibility)
+- Python 3.14
 - Azure CLI (`az login`) with **Storage Blob Data Contributor** role on the storage account
 - Virtual environment with dependencies installed (`pip install -r requirements.txt`)
 
 ### Run the full pipeline locally (real Azure)
 
-Use the provided `test_e2e_locally.sh` script in the repo root.  It exports all needed environment variables, uploads a test blob, and runs `python main.py` — identical to the ACA job.
+Use the provided `test_e2e_locally.sh` script. It exports all needed environment variables, uploads a test blob, and runs `python main.py` — identical to the ACA job.
 
 ```bash
 # One-time: grant yourself Storage Blob Data Contributor
@@ -179,6 +193,7 @@ az role assignment create --assignee $(az ad signed-in-user show --query id -o t
 bash src/workloads/training_pipeline/test_e2e_locally.sh --force        # fresh start
 bash src/workloads/training_pipeline/test_e2e_locally.sh                # idempotent – skips already done work
 ```
+
 ---
 
 ## CI/CD Automation (Azure DevOps)
@@ -193,21 +208,25 @@ bash src/workloads/training_pipeline/test_e2e_locally.sh                # idempo
 - Triggered by changes under `train/**`, `utils/**`, `tests/**`, `main.py`.  
 - Runs: ruff → basedpyright → pytest (all 56 tests).  
 
-**`ci-container.yaml`**  
-- Triggered by any change in `training_pipeline/**` on `main`.  
-- Builds the Docker image, scans with Trivy, pushes to ACR.  
-
-All pipelines use the reusable template `python-ci.yaml`.  Dependencies are installed from `requirements.txt` (no separate CI requirements file).
+Both pipelines use the reusable template `python-ci.yaml` (which includes Trivy FS scan and pip‑audit). No Docker build is performed in CI.
 
 ### CD Pipeline
 
-**`cd-training-job.yaml`**  
-- Triggered automatically when the container image is built on `main`.  
-- Stage **Staging**: updates the ACA Job (`acaj-train-stg`) with the new image tag.  
-- **Manual approval** gate.  
-- Stage **Production**: updates the production ACA Job (`acaj-train-prod`).  
+**`cd-training-job.yaml`** – Builds the training image and deploys it to the ACA Job.  
+- Triggered automatically when **either** `ci-elt` **or** `ci-ml-training` succeeds on `main`.  
+- Builds the Docker image, pushes it to ACR with an immutable tag.  
+- Deploys to **Staging** (`acaj-train-stg`).  
+- After manual approval, deploys to **Production** (`acaj-train-prod`).  
 
-Deployments use the `aca-deploy.yaml` template, which calls `az containerapp job update` (or equivalent) to change the image.
+All configuration (resource groups, job names, ACR) comes from the `sm-all-vars` variable group (populated by Terraform). Secrets (like the Azure DevOps PAT) are fetched from Key Vault at runtime.
+
+### Model Promotion Chain
+
+After a successful training run that passes both quality and performance gates, the training orchestrator **automatically**:
+1. Registers the model in Azure ML with the `Staging` alias.
+2. Sends a REST API call to Azure DevOps to trigger the **serving CD pipeline** (`cd-service`), passing the new model version.
+
+The serving CD then performs a canary deployment (private FQDN validation, gradual traffic shift, k6 tests, automatic rollback). No manual intervention is needed – the model goes from training to production safely and automatically.
 
 ---
 
@@ -218,6 +237,7 @@ Deployments use the `aca-deploy.yaml` template, which calls `az containerapp job
 - **Azure authentication failure**: Caught by storage helpers and wrapped in `RuntimeError`; the checkpoint is marked `FAILED`.
 - **MLflow network issues**: Propagated as exceptions; the orchestrator writes a `FAILED` checkpoint and re‑raises.
 - **ONNX verification failure**: If the max delta exceeds 1e‑3, a `RuntimeError` is raised, preventing an invalid model from being registered.
+- **Performance threshold violation**: If the ONNX model is too slow or low‑throughput, registration is skipped (with a clear tag in MLflow), but the run itself succeeds.
 - **Corrupted checkpoints**: Empty or invalid JSON is treated as “no checkpoint” and the phase re‑runs.
 
 All errors are logged as structured JSON (including tracebacks) for easy querying in Azure Log Analytics.
@@ -239,4 +259,4 @@ Everything is pinned in `requirements.txt`.
 
 ## Summary
 
-The training pipeline is a complete, production‑grade MLOps workflow. It runs on a serverless Azure Container Apps Job, is fully idempotent, and integrates seamlessly with Azure ML for experiment tracking and model registry. The same codebase is used for local development, CI validation, and production deployment, ensuring consistency and reproducibility at every stage.
+The training pipeline is a complete, production‑grade MLOps workflow. It runs on a serverless Azure Container Apps Job, is fully idempotent, and automatically promotes only models that meet strict quality and performance thresholds. It seamlessly triggers a canary deployment of the serving API, creating a fully automated, safe, and observable machine learning delivery pipeline.

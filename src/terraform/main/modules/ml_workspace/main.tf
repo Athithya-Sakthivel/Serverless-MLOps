@@ -29,7 +29,7 @@ resource "azurerm_machine_learning_workspace" "this" {
   location                = var.location
   resource_group_name     = var.resource_group_name
   application_insights_id = var.application_insights_id
-  key_vault_id            = var.key_vault_id      # external, central Key Vault
+  key_vault_id            = var.key_vault_id # external, central Key Vault
   storage_account_id      = azurerm_storage_account.ml.id
   container_registry_id   = var.container_registry_id
 

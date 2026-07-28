@@ -53,10 +53,19 @@ class TrainingConfig:
     train_fraction: float = 0.70
     validation_fraction: float = 0.15
     test_fraction: float = 0.15
+
+    # Quality thresholds for model promotion
     min_auc: float = 0.90
     min_f1: float = 0.85
     min_precision: float = 0.85
     min_recall: float = 0.85
+
+    # Performance thresholds for ONNX model
+    max_p95_latency_ms: float = 5.0  # p95 single‑row inference latency
+    min_throughput_rows_per_sec: int = 1000  # minimum throughput during benchmark
+    enable_performance_gate: bool = True  # whether to enforce performance thresholds
+
+    # LightGBM hyperparameters
     objective: str = "binary"
     metric: str = "auc"
     boosting_type: str = "gbdt"
@@ -70,6 +79,8 @@ class TrainingConfig:
     early_stopping_rounds: int = 50
     verbosity: int = -1
     n_jobs: int = 0
+
+    # Model registry
     model_name: str = "acs_income_classifier"
     promotion_stage: str = "Staging"
     enable_model_registration: bool = False
@@ -109,6 +120,9 @@ class AppConfig:
             min_f1=_env_float("MIN_F1", 0.85),
             min_precision=_env_float("MIN_PRECISION", 0.85),
             min_recall=_env_float("MIN_RECALL", 0.85),
+            max_p95_latency_ms=_env_float("MAX_P95_LATENCY_MS", 5.0),
+            min_throughput_rows_per_sec=_env_int("MIN_THROUGHPUT_ROWS_PER_SEC", 1000),
+            enable_performance_gate=_env_bool("ENABLE_PERFORMANCE_GATE", True),
             objective=_env_str("LIGHTGBM_OBJECTIVE", "binary") or "binary",
             metric=_env_str("LIGHTGBM_METRIC", "auc") or "auc",
             boosting_type=_env_str("LIGHTGBM_BOOSTING_TYPE", "gbdt") or "gbdt",

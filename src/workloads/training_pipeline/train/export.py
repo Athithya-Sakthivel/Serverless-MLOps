@@ -1,8 +1,9 @@
-"""Export LightGBM models to ONNX and validate inference parity."""
+"""Export LightGBM models to ONNX, verify inference parity, and benchmark performance."""
 
 from __future__ import annotations
 
 import hashlib
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -16,12 +17,18 @@ from onnxmltools.convert.lightgbm import convert as convert_lightgbm
 
 @dataclass(frozen=True, slots=True)
 class OnnxExportResult:
-    """ONNX artifact metadata."""
+    """ONNX artifact metadata including performance benchmarks."""
 
     onnx_path: Path
     sha256: str
     max_abs_probability_delta: float
     sample_count: int
+
+    # Performance metrics (populated after benchmarking)
+    p50_latency_ms: float | None = None
+    p95_latency_ms: float | None = None
+    p99_latency_ms: float | None = None
+    throughput_rows_per_sec: float | None = None
 
 
 def _sha256_file(path: Path) -> str:
@@ -40,7 +47,6 @@ def _positive_probability_from_onnx(
     """Extract the positive-class probability tensor from ONNX outputs."""
     named_outputs = list(zip(output_names, outputs, strict=True))
 
-    # Prefer an output whose name clearly identifies probabilities.
     for name, candidate in named_outputs:
         array = np.asarray(candidate)
         if "prob" in name.lower():
@@ -49,7 +55,6 @@ def _positive_probability_from_onnx(
             if array.ndim == 1:
                 return array.astype(np.float32, copy=False)
 
-    # Fall back to the last plausible probability tensor.
     for candidate in reversed(outputs):
         array = np.asarray(candidate)
         if array.ndim == 2 and array.shape[1] >= 2:
@@ -126,3 +131,61 @@ def export_lightgbm_classifier_to_onnx(
         max_abs_probability_delta=max_abs_delta,
         sample_count=int(sample_array.shape[0]),
     )
+
+
+def benchmark_onnx_model(
+    onnx_path: Path,
+    sample_data: np.ndarray,
+    warmup_iterations: int = 10,
+    benchmark_iterations: int = 100,
+) -> dict[str, float]:
+    """Benchmark an ONNX model and return latency percentiles and throughput.
+
+    Parameters
+    ----------
+    onnx_path : Path
+        Path to the ONNX file.
+    sample_data : np.ndarray
+        A 2D float32 array to use as input (shape: [rows, features]).
+    warmup_iterations : int
+        Number of warmup runs (not measured).
+    benchmark_iterations : int
+        Number of measurement runs; each run infers on the whole sample_data batch.
+
+    Returns
+    -------
+    dict with keys:
+        p50_latency_ms, p95_latency_ms, p99_latency_ms, throughput_rows_per_sec
+    """
+    if not onnx_path.exists():
+        raise FileNotFoundError(f"ONNX model not found: {onnx_path}")
+
+    sample = np.asarray(sample_data, dtype=np.float32)
+    if sample.ndim != 2:
+        raise ValueError("sample_data must be a 2D array")
+
+    session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+    input_name = session.get_inputs()[0].name
+
+    # Warm up
+    for _ in range(warmup_iterations):
+        session.run(None, {input_name: sample})
+
+    latencies = []
+    for _ in range(benchmark_iterations):
+        start = time.perf_counter()
+        session.run(None, {input_name: sample})
+        elapsed = time.perf_counter() - start
+        latencies.append(elapsed * 1000.0)  # milliseconds
+
+    latencies = np.array(latencies)
+    total_rows = sample.shape[0] * benchmark_iterations
+    total_time_s = np.sum(latencies) / 1000.0
+    throughput = total_rows / total_time_s if total_time_s > 0 else 0.0
+
+    return {
+        "p50_latency_ms": float(np.percentile(latencies, 50)),
+        "p95_latency_ms": float(np.percentile(latencies, 95)),
+        "p99_latency_ms": float(np.percentile(latencies, 99)),
+        "throughput_rows_per_sec": float(throughput),
+    }

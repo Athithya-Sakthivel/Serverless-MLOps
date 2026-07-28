@@ -24,7 +24,7 @@ locals {
   workbook_display_name        = "Serverless MLOps - ${var.environment == "staging" ? "Staging" : "Production"}"
   action_group_name            = "ag-${local.project_abbr}-${local.env_abbr}"
   action_group_short_name      = "${local.project_abbr}${local.env_abbr}"
-  ml_workspace_name            = "mlw-${local.project_abbr}-${local.env_abbr}-s7"
+  ml_workspace_name            = "mlw-${local.project_abbr}-${local.env_abbr}-s13"
   ml_key_vault_name            = "kv-${local.project_abbr}${local.env_abbr}ml${local.sub_suffix}"
   ml_storage_account_name      = "${local.project_abbr}${local.env_abbr}mlsa${local.sub_suffix}"
 
@@ -35,4 +35,12 @@ locals {
   aca_storage_queue_name       = "${local.project_abbr}trainqueue-${local.env_abbr}"
   event_grid_system_topic_name = "eg-${local.project_abbr}-${local.env_abbr}-storage"
   event_grid_subscription_name = "eg-${local.project_abbr}-${local.env_abbr}-raw-monthly"
+  staging_resource_group_name  = "rg-${local.project_abbr}-artifacts-stg"
+  prod_resource_group_name     = "rg-${local.project_abbr}-artifacts-prod"
+
+  # Bootstrap Key Vault (created by bootstrap.sh) – name and resource group
+  bootstrap_key_vault_name = "kv-azdo-bootstrap-${local.sub_suffix}"
+  bootstrap_state_rg       = "rg-sm-state-${local.sub_suffix}"
+
 }
+

@@ -23,52 +23,43 @@ resources:
           include:
             - main
 
-parameters:
-  - name: deployELT
-    type: boolean
-    default: true
-  - name: deployML
-    type: boolean
-    default: true
-
 pool:
   vmImage: ubuntu-24.04
 
 variables:
-  - group: sm-all-vars                              # contains CONTAINER_APP_JOB_NAME, containerRegistry, etc.
+  - group: sm-all-vars   # CONTAINER_APP_JOB_NAME_STAGING, CONTAINER_APP_JOB_NAME_PROD, containerRegistry, STAGING_RG, PROD_RG, etc.
 
 stages:
   - stage: build
     displayName: 'Build & Push Training Image'
     jobs:
-      - ${{ if or(parameters.deployELT, parameters.deployML) }}:
-        - job: build_push
-          displayName: 'Build and push training image'
-          steps:
-            - checkout: self
+      - job: build_push
+        displayName: 'Build and push training image'
+        steps:
+          - checkout: self
 
-            - task: AzureCLI@2
-              displayName: 'Build & push training container'
-              inputs:
-                azureSubscription: 'azdo-oidc-cd'
-                scriptType: bash
-                scriptLocation: inlineScript
-                inlineScript: |
-                  set -euo pipefail
+          - task: AzureCLI@2
+            displayName: 'Build & push training container'
+            inputs:
+              azureSubscription: 'azdo-oidc-cd'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
 
-                  LOGIN_SERVER="$(az acr show --name $(containerRegistry) --query loginServer -o tsv)"
-                  IMAGE_TAG="training-$(Build.SourceVersion)"
+                LOGIN_SERVER="$(az acr show --name $(containerRegistry) --query loginServer -o tsv)"
+                IMAGE_TAG="training-$(Build.SourceVersion)"
 
-                  az acr login -n $(containerRegistry)
-                  docker build \
-                    -f src/workloads/training_pipeline/Dockerfile \
-                    -t "${LOGIN_SERVER}/training:${IMAGE_TAG}" \
-                    .
-                  docker push "${LOGIN_SERVER}/training:${IMAGE_TAG}"
+                az acr login -n $(containerRegistry)
+                docker build \
+                  -f src/workloads/training_pipeline/Dockerfile \
+                  -t "${LOGIN_SERVER}/training:${IMAGE_TAG}" \
+                  .
+                docker push "${LOGIN_SERVER}/training:${IMAGE_TAG}"
 
-                  echo "##vso[task.setvariable variable=trainingImage;isOutput=true]${LOGIN_SERVER}/training:${IMAGE_TAG}"
-                addSpnToEnvironment: true
-              name: buildOutput
+                echo "##vso[task.setvariable variable=trainingImage;isOutput=true]${LOGIN_SERVER}/training:${IMAGE_TAG}"
+            addSpnToEnvironment: true
+          name: buildOutput
 
   - stage: staging
     displayName: 'Deploy to Staging'
@@ -81,12 +72,21 @@ stages:
           runOnce:
             deploy:
               steps:
-                - template: /azure-pipelines/templates/aca-deploy.yaml
-                  parameters:
-                    containerAppJobName: $(CONTAINER_APP_JOB_NAME)      # e.g. acaj-train-stg
-                    resourceGroup: $(STAGING_RG)
-                    image: $[ dependencies.build.outputs['buildOutput.trainingImage'] ]
-                    azureServiceConnection: 'azdo-oidc-cd'
+                - task: AzureCLI@2
+                  displayName: 'Update training job (staging)'
+                  inputs:
+                    azureSubscription: 'azdo-oidc-cd'
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+                      az containerapp job update \
+                        --name "$(CONTAINER_APP_JOB_NAME_STAGING)" \
+                        --resource-group "$(STAGING_RG)" \
+                        --image "$(trainingImage)" \
+                        --output none
+                  env:
+                    trainingImage: $[ dependencies.build.outputs['buildOutput.trainingImage'] ]
 
   - stage: production
     displayName: 'Deploy to Production'
@@ -100,9 +100,18 @@ stages:
           runOnce:
             deploy:
               steps:
-                - template: /azure-pipelines/templates/aca-deploy.yaml
-                  parameters:
-                    containerAppJobName: $(CONTAINER_APP_JOB_NAME)-prod   # adjust if naming differs
-                    resourceGroup: $(PROD_RG)
-                    image: $[ dependencies.build.outputs['buildOutput.trainingImage'] ]
-                    azureServiceConnection: 'azdo-oidc-cd'
+                - task: AzureCLI@2
+                  displayName: 'Update training job (production)'
+                  inputs:
+                    azureSubscription: 'azdo-oidc-cd'
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+                      az containerapp job update \
+                        --name "$(CONTAINER_APP_JOB_NAME_PROD)" \
+                        --resource-group "$(PROD_RG)" \
+                        --image "$(trainingImage)" \
+                        --output none
+                  env:
+                    trainingImage: $[ dependencies.build.outputs['buildOutput.trainingImage'] ]

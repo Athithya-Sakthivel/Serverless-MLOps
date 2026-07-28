@@ -1,8 +1,8 @@
-"""Training workflow orchestration – idempotent, checkpointed.
+"""Training workflow orchestration – idempotent, checkpointed, now with performance gating.
 
 Compatible with MLflow 3.x, Python 3.14, and Azure Machine Learning.
-Uses artifact-based model logging + manual registration to avoid
-the LoggedModels endpoint that Azure ML does not yet support.
+After training, the ONNX model is benchmarked for latency and throughput.
+Registration only occurs if both quality and performance thresholds are met.
 """
 
 from __future__ import annotations
@@ -29,7 +29,11 @@ from train.checkpoint import (
 )
 from train.dataset import create_target_column, load_clean_frame, split_dataset
 from train.evaluate import evaluate_model, feature_importance_table
-from train.export import export_lightgbm_classifier_to_onnx
+from train.export import (
+    OnnxExportResult,
+    benchmark_onnx_model,
+    export_lightgbm_classifier_to_onnx,
+)
 from train.features import build_feature_bundle
 from train.model import build_classifier, train_lightgbm_classifier
 from utils.config import AppConfig
@@ -96,7 +100,7 @@ def _float_metrics(metrics: dict[str, Any]) -> dict[str, float]:
     return flat
 
 
-def _promotion_passed(metrics: dict[str, Any], config: AppConfig) -> bool:
+def _quality_passed(metrics: dict[str, Any], config: AppConfig) -> bool:
     test = metrics["test"]
     training = config.training
     return (
@@ -197,6 +201,7 @@ def run_training_pipeline(
         configure_mlflow(config.mlflow)
 
         with mlflow.start_run(run_name=f"training-{raw_blob_name.replace('/', '_')}") as run:
+            # ----- data preparation -----------------------------------------
             clean_frame = load_clean_frame(
                 storage_account_name=config.storage.storage_account_name,
                 container_name=config.storage.clean_container_name,
@@ -233,6 +238,7 @@ def run_training_pipeline(
                 )
                 raise RuntimeError(msg)
 
+            # ----- training -------------------------------------------------
             classifier = build_classifier(config.training)
             trained = train_lightgbm_classifier(
                 classifier,
@@ -243,6 +249,7 @@ def run_training_pipeline(
                 early_stopping_rounds=config.training.early_stopping_rounds,
             )
 
+            # ----- evaluation (quality metrics) -----------------------------
             evaluation = evaluate_model(
                 trained.model,
                 X_validation=features.X_validation,
@@ -289,6 +296,7 @@ def run_training_pipeline(
                 trained.model, features.transformer.feature_names
             )
 
+            # ----- save model artifact --------------------------------------
             with tempfile.TemporaryDirectory() as tmp_dir:
                 model_file = Path(tmp_dir) / "model.pkl"
                 joblib.dump(trained.model, model_file)
@@ -296,24 +304,7 @@ def run_training_pipeline(
 
             model_uri = _model_artifact_uri(run.info.run_id, "model")
 
-            if config.training.enable_model_registration:
-                try:
-                    registered = mlflow.register_model(
-                        model_uri,
-                        config.training.model_name,
-                    )
-                    registration_payload = {
-                        "registered_model_name": registered.name,
-                        "model_version": str(registered.version),
-                    }
-                    mlflow.set_tag("model_registered", "true")
-                except Exception as reg_exc:
-                    LOG.warning("Model registration failed: %s", reg_exc)
-                    registration_payload = None
-                    mlflow.set_tag("model_registered", "false")
-            else:
-                mlflow.set_tag("model_registered", "false")
-
+            # ----- ONNX export + verification + benchmark -------------------
             try:
                 sample_validation = _first_rows(features.X_validation, 512)
             except ValueError:
@@ -333,6 +324,77 @@ def run_training_pipeline(
                     float(onnx_result.max_abs_probability_delta),
                 )
 
+                # ---------- performance benchmark ---------------------------
+                perf = benchmark_onnx_model(
+                    onnx_result.onnx_path,
+                    sample_validation,
+                )
+                onnx_result = OnnxExportResult(
+                    onnx_path=onnx_result.onnx_path,
+                    sha256=onnx_result.sha256,
+                    max_abs_probability_delta=onnx_result.max_abs_probability_delta,
+                    sample_count=onnx_result.sample_count,
+                    p50_latency_ms=perf["p50_latency_ms"],
+                    p95_latency_ms=perf["p95_latency_ms"],
+                    p99_latency_ms=perf["p99_latency_ms"],
+                    throughput_rows_per_sec=perf["throughput_rows_per_sec"],
+                )
+                mlflow.log_metrics(
+                    {
+                        "onnx_p50_latency_ms": perf["p50_latency_ms"],
+                        "onnx_p95_latency_ms": perf["p95_latency_ms"],
+                        "onnx_p99_latency_ms": perf["p99_latency_ms"],
+                        "onnx_throughput_rows_per_sec": perf["throughput_rows_per_sec"],
+                    }
+                )
+
+            # ----- registration gating (quality + performance) --------------
+            quality_ok = _quality_passed(eval_metrics, config)
+            performance_ok = True
+            if config.training.enable_performance_gate:
+                performance_ok = (
+                    onnx_result.p95_latency_ms is not None
+                    and onnx_result.p95_latency_ms <= config.training.max_p95_latency_ms
+                    and onnx_result.throughput_rows_per_sec is not None
+                    and onnx_result.throughput_rows_per_sec
+                    >= config.training.min_throughput_rows_per_sec
+                )
+
+            if config.training.enable_model_registration and quality_ok and performance_ok:
+                try:
+                    registered = mlflow.register_model(
+                        model_uri,
+                        config.training.model_name,
+                    )
+                    registration_payload = {
+                        "registered_model_name": registered.name,
+                        "model_version": str(registered.version),
+                    }
+                    # Assign Staging alias so the canary can pick it up automatically
+                    from mlflow.tracking import MlflowClient
+
+                    client = MlflowClient(tracking_uri=config.mlflow.tracking_uri)
+                    client.set_registered_model_alias(
+                        name=config.training.model_name,
+                        alias="Staging",
+                        version=str(registered.version),
+                    )
+                    mlflow.set_tag("model_registered", "true")
+                    mlflow.set_tag("model_promotion_alias", "Staging")
+                except Exception as reg_exc:
+                    LOG.warning("Model registration failed: %s", reg_exc)
+                    registration_payload = None
+                    mlflow.set_tag("model_registered", "false")
+            else:
+                mlflow.set_tag("model_registered", "false")
+                if not quality_ok:
+                    mlflow.set_tag("registration_skip_reason", "quality_thresholds_not_met")
+                elif not performance_ok:
+                    mlflow.set_tag("registration_skip_reason", "performance_thresholds_not_met")
+                else:
+                    mlflow.set_tag("registration_skip_reason", "registration_disabled")
+
+            # ----- final metrics & checkpoint -------------------------------
             metrics_payload = {
                 "evaluation": _jsonify(eval_metrics),
                 "feature_importance": _jsonify(
@@ -340,6 +402,12 @@ def run_training_pipeline(
                 ),
                 "best_iteration": _jsonify(trained.best_iteration),
                 "onnx_sha256": onnx_result.sha256,
+                "onnx_performance": {
+                    "p50_latency_ms": onnx_result.p50_latency_ms,
+                    "p95_latency_ms": onnx_result.p95_latency_ms,
+                    "p99_latency_ms": onnx_result.p99_latency_ms,
+                    "throughput_rows_per_sec": onnx_result.throughput_rows_per_sec,
+                },
             }
             mlflow.log_dict(metrics_payload, "reports/metrics.json")
 

@@ -26,9 +26,6 @@ pr:
 pool:
   vmImage: ubuntu-24.04
 
-# ──────────────────────────────────────────────────────────────────────────
-# All non‑secret configuration is in sm‑all‑vars (populated by Terraform).
-# ──────────────────────────────────────────────────────────────────────────
 variables:
   - group: sm-all-vars
 

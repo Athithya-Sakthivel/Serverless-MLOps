@@ -1,8 +1,14 @@
+# ---------------------------------------------------------------------------
+# Data source – bootstrap Key Vault (created during bootstrap)
+# ---------------------------------------------------------------------------
 data "azurerm_key_vault" "bootstrap" {
-  name                = var.bootstrap_key_vault_name
-  resource_group_name = var.bootstrap_state_rg
+  name                = local.bootstrap_key_vault_name
+  resource_group_name = local.bootstrap_state_rg
 }
 
+# ---------------------------------------------------------------------------
+# State module – resource group, ADLS Gen2 storage, Azure Container Registry
+# ---------------------------------------------------------------------------
 module "state" {
   source = "./modules/state"
 
@@ -15,6 +21,9 @@ module "state" {
   tags                      = local.common_tags
 }
 
+# ---------------------------------------------------------------------------
+# Observability – Log Analytics, Application Insights, Workbook, alerts
+# ---------------------------------------------------------------------------
 module "observability" {
   source = "./modules/observability"
 
@@ -34,6 +43,9 @@ module "observability" {
   tags                             = local.common_tags
 }
 
+# ---------------------------------------------------------------------------
+# ML workspace – uses the central bootstrap Key Vault
+# ---------------------------------------------------------------------------
 module "ml_workspace" {
   source = "./modules/ml_workspace"
 
@@ -41,9 +53,9 @@ module "ml_workspace" {
   location                    = var.location
   environment                 = var.environment
   workspace_name              = local.ml_workspace_name
-  key_vault_name              = local.ml_key_vault_name
-  ml_storage_account_name     = local.ml_storage_account_name   # new
-  datalake_storage_account_id = module.state.storage_account_id # data lake
+  key_vault_id                = data.azurerm_key_vault.bootstrap.id # ← central Key Vault
+  ml_storage_account_name     = local.ml_storage_account_name
+  datalake_storage_account_id = module.state.storage_account_id
   container_registry_id       = module.state.acr_id
   application_insights_id     = module.observability.application_insights_id
   subscription_id             = var.subscription_id
@@ -51,6 +63,9 @@ module "ml_workspace" {
   tags                        = local.common_tags
 }
 
+# ---------------------------------------------------------------------------
+# Eventing – storage queue, Event Grid system topic
+# ---------------------------------------------------------------------------
 module "eventing" {
   source = "./modules/eventing"
 
@@ -66,6 +81,9 @@ module "eventing" {
   tags                         = local.common_tags
 }
 
+# ---------------------------------------------------------------------------
+# ACA – Container Apps Environment, serving app, training job
+# ---------------------------------------------------------------------------
 module "aca" {
   source = "./modules/aca"
 
@@ -89,15 +107,15 @@ module "aca" {
   ml_workspace_id     = module.ml_workspace.workspace_id
   mlflow_tracking_uri = module.ml_workspace.mlflow_tracking_uri
 
-  serve_port = var.aca_serve_port
-  tags       = local.common_tags
-
-  container_registry_name  = module.state.acr_name
-  staging_resource_group   = "rg-sm-artifacts-stg"   # or derive from locals
-  prod_resource_group      = "rg-sm-artifacts-prod"
+  serve_port                     = var.aca_serve_port
   app_insights_connection_string = module.observability.application_insights_connection_string
+
+  tags = local.common_tags
 }
 
+# ---------------------------------------------------------------------------
+# Azure DevOps – application‑level pipelines and variable groups
+# ---------------------------------------------------------------------------
 module "azure_devops" {
   source = "./modules/azure_devops"
 
@@ -112,10 +130,15 @@ module "azure_devops" {
   tfstate_storage_account_name = var.state_storage_account_name
   tfstate_container_name       = var.state_container_name
   tfstate_key                  = "main/terraform/${var.environment}.tfstate"
-  tfstate_subscription_id = var.subscription_id
-  tfstate_tenant_id       = var.tenant_id
-  tfstate_client_id       = var.ado_client_id    # the CI service principal's client ID
+  tfstate_subscription_id      = var.subscription_id
+  tfstate_tenant_id            = var.tenant_id
+  tfstate_client_id            = var.ado_client_id
 
-  storage_account_name = module.state.storage_account_name
-  mlflow_tracking_uri  = module.ml_workspace.mlflow_tracking_uri
+  storage_account_name    = module.state.storage_account_name
+  mlflow_tracking_uri     = module.ml_workspace.mlflow_tracking_uri
+  container_registry_name = module.state.acr_name
+  train_job_name          = local.aca_train_job_name
+  serve_app_name          = local.aca_serve_app_name
+  staging_resource_group  = local.staging_resource_group_name
+  prod_resource_group     = local.prod_resource_group_name
 }

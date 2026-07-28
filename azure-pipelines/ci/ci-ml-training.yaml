@@ -39,4 +39,3 @@ steps:
       requirementsFile: 'src/workloads/training_pipeline/requirements-ci.txt'
       devRequirementsFile: 'src/workloads/training_pipeline/requirements-ci.txt'
       includeDocker: false
-      # preTestSteps intentionally empty – smoke test only after mocking

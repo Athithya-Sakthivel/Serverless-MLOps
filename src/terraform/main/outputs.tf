@@ -88,18 +88,6 @@ output "mlflow_tracking_uri" {
   value = module.ml_workspace.mlflow_tracking_uri
 }
 
-output "ml_key_vault_name" {
-  value = module.ml_workspace.key_vault_name
-}
-
-output "ml_key_vault_id" {
-  value = module.ml_workspace.key_vault_id
-}
-
-output "ml_key_vault_uri" {
-  value = module.ml_workspace.key_vault_uri
-}
-
 output "aca_environment_name" {
   value = module.aca.environment_name
 }
@@ -144,12 +132,10 @@ output "aca_storage_queue_name" {
   value = module.eventing.storage_queue_name
 }
 
-# ─── Azure DevOps module outputs ─────────────────────────────────────────
-
 output "elt_ci_pipeline_id" {
   value = module.azure_devops.elt_ci_pipeline_id
 }
 
 output "elt_ci_variable_group_id" {
-  value = module.azure_devops.elt_ci_variable_group_id
+  value = module.azure_devops.sm_all_vars_id
 }

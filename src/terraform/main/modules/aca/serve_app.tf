@@ -1,8 +1,8 @@
 # ------------------------------------------------------------------------------
-# Serving Container App (canary‑ready)
+# Serving Container App (canary-ready)
 #
 # Provisioned once by Terraform, then updated by the CD pipeline with new
-# image tags and traffic splits.  Traffic is initially 100 % to the latest
+# image tags and traffic splits. Traffic is initially 100 % to the latest
 # revision so that the first deployment “just works”.
 # ------------------------------------------------------------------------------
 
@@ -27,14 +27,14 @@ resource "azurerm_container_app" "serve" {
   }
 
   ingress {
-    external_enabled = true
-    target_port      = var.serve_port
-    transport        = "http"             # explicit – avoids auto‑negotiation
-    allow_insecure   = false
+    external_enabled           = true
+    allow_insecure_connections = false
+    target_port                = var.serve_port
+    transport                  = "http"
 
     traffic_weight {
       latest_revision = true
-      percentage      = 100              # CD pipeline overrides this after bootstrap
+      percentage      = 100
     }
   }
 
@@ -42,9 +42,6 @@ resource "azurerm_container_app" "serve" {
     min_replicas = var.serve_min_replicas
     max_replicas = var.serve_max_replicas
 
-    # --------------------------------------------------------------------
-    # Container definition
-    # --------------------------------------------------------------------
     container {
       name   = "serve"
       image  = var.serving_image
@@ -55,51 +52,53 @@ resource "azurerm_container_app" "serve" {
         name  = "MODE"
         value = "serve"
       }
+
       env {
         name  = "PORT"
         value = tostring(var.serve_port)
       }
+
       env {
         name  = "MLFLOW_TRACKING_URI"
         value = var.mlflow_tracking_uri
       }
+
       env {
         name  = "AZUREML_WORKSPACE_ID"
         value = var.ml_workspace_id
       }
-      # Added: Application Insights telemetry
+
       env {
         name  = "APPLICATIONINSIGHTS_CONNECTION_STRING"
         value = var.app_insights_connection_string
       }
 
-      # ------------------------------------------------------------------
-      # Health probes – used by the platform and canary verification
-      # ------------------------------------------------------------------
       readiness_probe {
-        transport      = "HTTP"
-        port           = var.serve_port
-        path           = "/ready"
-        interval_seconds = 10
-        timeout_seconds  = 5
-        success_threshold = 1
-        failure_threshold = 3
+        transport               = "HTTP"
+        port                    = var.serve_port
+        path                    = "/ready"
+        interval_seconds        = 10
+        timeout                 = 5
+        success_count_threshold = 1
+        failure_count_threshold = 3
       }
+
       liveness_probe {
-        transport      = "HTTP"
-        port           = var.serve_port
-        path           = "/health"
-        interval_seconds = 30
-        timeout_seconds  = 5
-        failure_threshold = 3
+        transport               = "HTTP"
+        port                    = var.serve_port
+        path                    = "/health"
+        interval_seconds        = 30
+        timeout                 = 5
+        failure_count_threshold = 3
       }
+
       startup_probe {
-        transport      = "HTTP"
-        port           = var.serve_port
-        path           = "/health"
-        interval_seconds = 5
-        timeout_seconds  = 30
-        failure_threshold = 60
+        transport               = "HTTP"
+        port                    = var.serve_port
+        path                    = "/health"
+        interval_seconds        = 5
+        timeout                 = 30
+        failure_count_threshold = 60
       }
     }
   }
@@ -114,7 +113,7 @@ resource "azurerm_container_app" "serve" {
 }
 
 # ---------------------------------------------------------------------------
-# Entra ID authentication (unchanged logic, but stabilised redirect URI)
+# Entra ID authentication
 # ---------------------------------------------------------------------------
 resource "azuread_application" "serve" {
   display_name     = "${var.serve_app_name}-auth"
@@ -122,12 +121,10 @@ resource "azuread_application" "serve" {
   owners           = [data.azurerm_client_config.current.object_id]
 
   web {
-    # Use a stable placeholder until the first deploy.
-    # After the first `tofu apply` you can replace this with the real FQDN
-    # (output `serve_app_latest_revision_fqdn`) to avoid a permanent diff.
     redirect_uris = [
       "https://${var.serve_app_name}.${var.location}.azurecontainerapps.io/.auth/login/aad/callback"
     ]
+
     implicit_grant {
       id_token_issuance_enabled = true
     }
@@ -140,15 +137,14 @@ resource "azuread_service_principal" "serve" {
 }
 
 # ---------------------------------------------------------------------------
-# Bind the app registration to the Container App (azurerm doesn’t support
-# this natively, so we use azapi).
+# Bind the app registration to the Container App.
 # ---------------------------------------------------------------------------
 resource "azapi_resource" "serve_auth" {
   type      = "Microsoft.App/containerApps/authConfigs@2026-01-01"
   name      = "current"
   parent_id = azurerm_container_app.serve.id
 
-  schema_validation_enabled = true
+  schema_validation_enabled = false
 
   body = {
     properties = {
@@ -175,18 +171,15 @@ resource "azapi_resource" "serve_auth" {
 
       identityProviders = {
         azureActiveDirectory = {
-          enabled           = true
-          isAutoProvisioned = false
+          enabled = true
 
           login = {
             disableWWWAuthenticate = true
           }
 
           registration = {
-            clientId               = azuread_application.serve.client_id
-            openIdIssuer           = "https://login.microsoftonline.com/${data.azurerm_client_config.current.tenant_id}/v2.0"
-            # Optional: if you ever need a client secret, uncomment and set the secret on the Container App
-            # clientSecretSettingName = "AUTH_CLIENT_SECRET"
+            clientId     = azuread_application.serve.client_id
+            openIdIssuer = "https://login.microsoftonline.com/${data.azurerm_client_config.current.tenant_id}/v2.0"
           }
 
           validation = {

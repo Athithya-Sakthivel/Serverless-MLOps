@@ -247,5 +247,5 @@ variable "tags" {
 variable "app_insights_connection_string" {
   description = "Application Insights connection string for the serving app."
   type        = string
-  default = "" # Not sensitive
+  default     = "" # Not sensitive
 }
