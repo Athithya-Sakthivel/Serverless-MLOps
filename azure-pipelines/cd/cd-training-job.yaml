@@ -50,6 +50,7 @@ stages:
             fetchDepth: 1
 
           - task: AzureCLI@2
+            name: buildOutput
             displayName: 'Build, scan & push training container'
             inputs:
               azureSubscription: 'azdo-oidc-cd'
@@ -58,7 +59,6 @@ stages:
               inlineScript: |
                 set -euo pipefail
 
-                # Resolve ACR login server and construct immutable image tag
                 LOGIN_SERVER="$(az acr show --name "$CONTAINER_REGISTRY" --query loginServer -o tsv)"
                 IMAGE_TAG="training-${BUILD_SOURCE_VERSION}"
                 FULL_IMAGE="${LOGIN_SERVER}/training:${IMAGE_TAG}"
@@ -70,7 +70,6 @@ stages:
                   -t "${FULL_IMAGE}" \
                   src/workloads/training_pipeline
 
-                # Trivy vulnerability scan – fail on HIGH or CRITICAL
                 echo "##[section]Scanning image with Trivy (HIGH/CRITICAL)"
                 TRIVY_VERSION="0.72.0"
                 curl -fsSL --retry 3 --connect-timeout 10 \
@@ -84,16 +83,13 @@ stages:
                   --exit-code 1 \
                   "${FULL_IMAGE}"
 
-                # Push the image
                 echo "##[section]Pushing image: ${FULL_IMAGE}"
                 docker push "${FULL_IMAGE}"
 
-                # Export the image reference for the staging stage
                 echo "##vso[task.setvariable variable=trainingImage;isOutput=true]${FULL_IMAGE}"
-              env:
-                CONTAINER_REGISTRY: $(containerRegistry)
-                BUILD_SOURCE_VERSION: $(Build.SourceVersion)
-            name: buildOutput
+            env:
+              CONTAINER_REGISTRY: $(containerRegistry)
+              BUILD_SOURCE_VERSION: $(Build.SourceVersion)
 
   # --------------------------------------------------------------------------
   # Stage 2 – Deploy to staging (automatic, no approval)
@@ -102,6 +98,8 @@ stages:
     displayName: 'Deploy to Staging'
     dependsOn: build
     condition: succeeded()
+    variables:
+      trainingImage: $[ stageDependencies.build.build_push.outputs['buildOutput.trainingImage'] ]
     jobs:
       - job: deploy_staging
         displayName: 'Update ACA Job – Staging'
@@ -115,7 +113,6 @@ stages:
               inlineScript: |
                 set -euo pipefail
 
-                # Ensure the containerapp extension is available
                 az extension add --name containerapp --upgrade --yes 2>/dev/null || true
 
                 echo "Updating training job: $CONTAINER_APP_JOB_NAME_STAGING"
@@ -126,8 +123,7 @@ stages:
                   --output none
 
                 echo "Staging deployment complete."
-              env:
-                CONTAINER_APP_JOB_NAME_STAGING: $(CONTAINER_APP_JOB_NAME)
-                STAGING_RG: $(STAGING_RG)
-                # Regular‑job cross‑stage reference (quoted for YAML safety)
-                TRAINING_IMAGE: '$[ stageDependencies.build.build_push.outputs[''buildOutput.trainingImage''] ]'
+            env:
+              CONTAINER_APP_JOB_NAME_STAGING: $(CONTAINER_APP_JOB_NAME)
+              STAGING_RG: $(STAGING_RG)
+              TRAINING_IMAGE: $(trainingImage)
