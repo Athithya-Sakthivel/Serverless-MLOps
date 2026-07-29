@@ -36,6 +36,6 @@ steps:
     parameters:
       serviceDirectory: 'src/workloads/training_pipeline'
       pythonVersion: '3.14'
-      requirementsFile: 'src/workloads/training_pipeline/requirements-ci.txt'
-      devRequirementsFile: 'src/workloads/training_pipeline/requirements-ci.txt'
+      requirementsFile: 'src/workloads/training_pipeline/requirements.txt'
+      devRequirementsFile: 'src/workloads/training_pipeline/requirements.txt'
       includeDocker: false

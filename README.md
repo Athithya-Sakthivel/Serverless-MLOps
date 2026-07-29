@@ -102,34 +102,32 @@ sleep 5
 git add . && git commit -m "bootstrap extend" && git push origin main
 
 ```
-
-## PHASE 1.3 main terraform
-
-## PHASE 2.1 
-bash src/scripts/other_roles.sh # creates roles required for local dev
-export ARTIFACTS_STORAGE_ACC_NAME="smstgartifactsf41930"
-python3 src/scripts/simulate_data_upload.py
-
-
-<details>
 <summary>▶ Expected outputs</summary>
 
-!![alt text](docs/screenshots/bootstrap.png)
-![alt text](docs/screenshots/allow_ci.png)
-
-</details>
 
 
+## PHASE 1.3: Apply Main Infrastructure
+
+Trigger the Terraform CD pipeline manually from the Azure DevOps UI. It provisions all Azure resources for staging. On Azure for Students, creating both the Container App and Job simultaneously may exceed the 20‑minute provisioning timeout. If `ContainerAppOperationError` occurs, re-run the pipeline — the warm environment will complete within the limit.
+
+**Pipeline:** `Serverless-MLOps-terraform-cd`  
+**Branch:** `main`  
+**Environment:** `staging` (requires manual approval)
+
+---
+
+<summary>▶ Expected outputs</summary>
 
 
+## PHASE 2.1: Local Dev Roles & Seed Data
 
+Assign RBAC roles for local development, then upload sample data to trigger the training pipeline.
 
+```bash
+bash src/scripts/other_roles.sh
+export ARTIFACTS_STORAGE_ACC_NAME="smstgartifactsf41930"
+python3 src/scripts/simulate_data_upload.py
+```
 
-
-
-
-
-
-
-
+<summary>▶ Expected outputs</summary>
 
