@@ -1,6 +1,6 @@
-# src/terraform/main
+# Main Infrastructure (src/terraform/main)
 
-Production-grade OpenTofu configuration for a serverless MLOps platform on Azure. Every resource name is derived from the subscription ID and environment — no hardcoded values.
+OpenTofu configuration for a serverless MLOps platform on Azure. Every resource name is derived from the subscription ID and environment — no hardcoded values.
 
 ## Architecture
 

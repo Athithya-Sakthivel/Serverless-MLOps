@@ -1,4 +1,8 @@
 # Reusable CI template for Python services.
+#
+# Creates a virtual environment in the repo root, installs dependencies,
+# then runs linting, type-checking, tests, dependency audit, and a Trivy
+# filesystem vulnerability scan.
 
 parameters:
   - name: serviceDirectory
@@ -53,6 +57,7 @@ steps:
         -r "$(Build.SourcesDirectory)/${{ parameters.devRequirementsFile }}"
       python -m pip check
     displayName: 'Install dependencies'
+    workingDirectory: $(Build.SourcesDirectory)
     env:
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
 
@@ -61,18 +66,21 @@ steps:
       source .venv/bin/activate
       ruff check "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
     displayName: 'Ruff lint'
+    workingDirectory: $(Build.SourcesDirectory)
 
   - bash: |
       set -euo pipefail
       source .venv/bin/activate
       ruff format --check "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
     displayName: 'Ruff format check'
+    workingDirectory: $(Build.SourcesDirectory)
 
   - bash: |
       set -euo pipefail
       source .venv/bin/activate
       basedpyright "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
     displayName: 'basedpyright type-check'
+    workingDirectory: $(Build.SourcesDirectory)
 
   - ${{ each step in parameters.preTestSteps }}:
     - ${{ step }}
@@ -84,6 +92,7 @@ steps:
         -v \
         --junitxml="$(Build.SourcesDirectory)/test-results.xml"
     displayName: 'Run tests'
+    workingDirectory: $(Build.SourcesDirectory)
 
   - task: PublishTestResults@2
     displayName: 'Publish test results'
@@ -100,6 +109,7 @@ steps:
       mkdir -p "$(Build.ArtifactStagingDirectory)/security"
       pip-audit -f json -o "$(Build.ArtifactStagingDirectory)/security/pip-audit.json"
     displayName: 'Dependency vulnerability audit'
+    workingDirectory: $(Build.SourcesDirectory)
 
   - bash: |
       set -euo pipefail
