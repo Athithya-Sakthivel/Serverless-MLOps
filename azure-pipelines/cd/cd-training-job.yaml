@@ -1,5 +1,9 @@
 # ---------------------------------------------------------------------------
 # CD – Training Job
+#
+# Triggered by CI success for ELT or training code on main.
+# Builds the training image, scans with Trivy, pushes to ACR,
+# then updates the ACA Job in staging → manual approval → production.
 # ---------------------------------------------------------------------------
 
 trigger: none
@@ -26,6 +30,9 @@ variables:
   - group: sm-all-vars
 
 stages:
+  # -------------------------------------------------------------------------
+  # Stage 1 – Build & Push
+  # -------------------------------------------------------------------------
   - stage: build
     displayName: 'Build & Push Training Image'
     jobs:
@@ -33,9 +40,11 @@ stages:
         displayName: 'Build and push training image'
         steps:
           - checkout: self
+            clean: true
+            fetchDepth: 1
 
           - task: AzureCLI@2
-            displayName: 'Build & push training container'
+            displayName: 'Build, scan & push training container'
             inputs:
               azureSubscription: 'azdo-oidc-cd'
               scriptType: bash
@@ -45,18 +54,41 @@ stages:
 
                 LOGIN_SERVER="$(az acr show --name $(containerRegistry) --query loginServer -o tsv)"
                 IMAGE_TAG="training-$(Build.SourceVersion)"
+                FULL_IMAGE="${LOGIN_SERVER}/training:${IMAGE_TAG}"
 
+                echo "Building training image: ${FULL_IMAGE}"
                 az acr login -n $(containerRegistry)
                 docker build \
                   -f src/workloads/training_pipeline/Dockerfile \
-                  -t "${LOGIN_SERVER}/training:${IMAGE_TAG}" \
+                  -t "${FULL_IMAGE}" \
                   .
-                docker push "${LOGIN_SERVER}/training:${IMAGE_TAG}"
 
-                echo "##vso[task.setvariable variable=trainingImage;isOutput=true]${LOGIN_SERVER}/training:${IMAGE_TAG}"
-            addSpnToEnvironment: true
-          name: buildOutput
+                echo "Scanning image with Trivy..."
+                TRIVY_VERSION='0.72.0'
+                curl -fsSL --retry 3 --connect-timeout 10 \
+                  -o /tmp/trivy.tar.gz \
+                  "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+                tar -xzf /tmp/trivy.tar.gz -C /tmp trivy
+                chmod +x /tmp/trivy
 
+                /tmp/trivy image \
+                  --severity HIGH,CRITICAL \
+                  --exit-code 1 \
+                  "${FULL_IMAGE}" || {
+                    echo "Trivy scan failed — HIGH/CRITICAL vulnerabilities found"
+                    exit 1
+                  }
+
+                echo "Pushing image: ${FULL_IMAGE}"
+                docker push "${FULL_IMAGE}"
+
+                echo "##vso[task.setvariable variable=trainingImage;isOutput=true]${FULL_IMAGE}"
+              addSpnToEnvironment: true
+            name: buildOutput
+
+  # -------------------------------------------------------------------------
+  # Stage 2 – Deploy to Staging
+  # -------------------------------------------------------------------------
   - stage: staging
     displayName: 'Deploy to Staging'
     dependsOn: build
@@ -69,21 +101,28 @@ stages:
             deploy:
               steps:
                 - task: AzureCLI@2
-                  displayName: 'Update training job (staging)'
+                  displayName: 'Update training job image'
                   inputs:
                     azureSubscription: 'azdo-oidc-cd'
                     scriptType: bash
                     scriptLocation: inlineScript
                     inlineScript: |
                       set -euo pipefail
+
+                      echo "Updating training job: $(CONTAINER_APP_JOB_NAME_STAGING)"
                       az containerapp job update \
                         --name "$(CONTAINER_APP_JOB_NAME_STAGING)" \
                         --resource-group "$(STAGING_RG)" \
-                        --image "$(trainingImage)" \
+                        --image "$(TRAINING_IMAGE)" \
                         --output none
-                  env:
-                    trainingImage: $[ dependencies.build.outputs['buildOutput.trainingImage'] ]
 
+                      echo "Staging deployment complete."
+                  env:
+                    TRAINING_IMAGE: $[ dependencies.build.outputs['buildOutput.trainingImage'] ]
+
+  # -------------------------------------------------------------------------
+  # Stage 3 – Deploy to Production (manual approval)
+  # -------------------------------------------------------------------------
   - stage: production
     displayName: 'Deploy to Production'
     dependsOn: staging
@@ -97,17 +136,21 @@ stages:
             deploy:
               steps:
                 - task: AzureCLI@2
-                  displayName: 'Update training job (production)'
+                  displayName: 'Update training job image'
                   inputs:
                     azureSubscription: 'azdo-oidc-cd'
                     scriptType: bash
                     scriptLocation: inlineScript
                     inlineScript: |
                       set -euo pipefail
+
+                      echo "Updating training job: $(CONTAINER_APP_JOB_NAME_PROD)"
                       az containerapp job update \
                         --name "$(CONTAINER_APP_JOB_NAME_PROD)" \
                         --resource-group "$(PROD_RG)" \
-                        --image "$(trainingImage)" \
+                        --image "$(TRAINING_IMAGE)" \
                         --output none
+
+                      echo "Production deployment complete."
                   env:
-                    trainingImage: $[ dependencies.build.outputs['buildOutput.trainingImage'] ]
+                    TRAINING_IMAGE: $[ dependencies.build.outputs['buildOutput.trainingImage'] ]
