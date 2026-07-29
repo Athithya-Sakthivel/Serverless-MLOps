@@ -108,11 +108,11 @@ git add . && git commit -m "bootstrap extend" && git push origin main
 
 ## PHASE 1.3: Apply Main Infrastructure
 
-Trigger the Terraform CD pipeline manually from the Azure DevOps UI. It provisions all Azure resources for staging. On Azure for Students, creating both the Container App and Job simultaneously may exceed the 20‑minute provisioning timeout. If `ContainerAppOperationError` occurs, re-run the pipeline — the warm environment will complete within the limit. 
+Trigger the Terraform CD pipeline manually from the Azure DevOps UI. It provisions all Azure resources for staging. On Azure for Students, creating both the Container App and Job simultaneously may exceed the 20‑minute provisioning timeout. If `ContainerAppOperationError` occurs, re-run the pipeline — the warm environment will complete within the limit. permission to use staging environment on first run
 
 **Pipeline:** `Serverless-MLOps-terraform-cd`  
 **Branch:** `main`  
-**Environment:** `staging` (requires manual approval and permission to use staging environment)
+**Environment:** `staging` (requires manual approval)
 
 ---
 

@@ -1,12 +1,13 @@
 # ---------------------------------------------------------------------------
 # CD – Training Job
 #
-# Triggered automatically when **either** the ELT CI or the ML-Training CI
+# Triggered automatically when either the ELT CI or the ML-Training CI
 # pipeline succeeds on the `main` branch.
 #
-# Builds the training Docker image, scans it with Trivy, pushes to ACR,
-# then updates the ACA Job in staging. After manual approval, promotes
-# the same image to production.
+# Stages:
+#   1. Build & push the training container image (with Trivy scan)
+#   2. Deploy to staging (automatic)
+#   3. Deploy to production (manual approval)
 # ---------------------------------------------------------------------------
 
 trigger: none
@@ -14,13 +15,13 @@ trigger: none
 resources:
   pipelines:
     - pipeline: ciElt
-      source: Serverless-MLOps-elt-ci        # exact name of the ELT CI pipeline
+      source: Serverless-MLOps-elt-ci        # must match the CI pipeline name
       trigger:
         branches:
           include:
             - main
     - pipeline: ciMlTraining
-      source: Serverless-MLOps-ml-training-ci  # exact name of the Training CI pipeline
+      source: Serverless-MLOps-ml-training-ci
       trigger:
         branches:
           include:
@@ -30,7 +31,7 @@ pool:
   vmImage: ubuntu-24.04
 
 variables:
-  - group: sm-all-vars                     # single variable group – populated by Terraform
+  - group: sm-all-vars                       # single variable group managed by Terraform
 
 stages:
   # -------------------------------------------------------------------------
@@ -49,7 +50,7 @@ stages:
           - task: AzureCLI@2
             displayName: 'Build, scan & push training container'
             inputs:
-              azureSubscription: 'azdo-oidc-cd'
+              azureSubscription: 'azdo-oidc-cd'    # OIDC service connection
               scriptType: bash
               scriptLocation: inlineScript
               inlineScript: |
@@ -59,14 +60,14 @@ stages:
                 IMAGE_TAG="training-$(Build.SourceVersion)"
                 FULL_IMAGE="${LOGIN_SERVER}/training:${IMAGE_TAG}"
 
-                echo "Building training image: ${FULL_IMAGE}"
+                echo "##[section]Building training image: ${FULL_IMAGE}"
                 az acr login -n $(containerRegistry)
                 docker build \
                   -f src/workloads/training_pipeline/Dockerfile \
                   -t "${FULL_IMAGE}" \
-                  .
+                  src/workloads/training_pipeline
 
-                echo "Scanning image with Trivy..."
+                echo "##[section]Scanning image with Trivy (HIGH/CRITICAL)"
                 TRIVY_VERSION='0.72.0'
                 curl -fsSL --retry 3 --connect-timeout 10 \
                   -o /tmp/trivy.tar.gz \
@@ -78,11 +79,11 @@ stages:
                   --severity HIGH,CRITICAL \
                   --exit-code 1 \
                   "${FULL_IMAGE}" || {
-                    echo "Trivy scan failed – HIGH/CRITICAL vulnerabilities found"
+                    echo "##vso[task.logissue type=error]Trivy scan failed – HIGH/CRITICAL vulnerabilities found"
                     exit 1
                   }
 
-                echo "Pushing image: ${FULL_IMAGE}"
+                echo "##[section]Pushing image: ${FULL_IMAGE}"
                 docker push "${FULL_IMAGE}"
 
                 echo "##vso[task.setvariable variable=trainingImage;isOutput=true]${FULL_IMAGE}"
@@ -90,11 +91,12 @@ stages:
             name: buildOutput
 
   # -------------------------------------------------------------------------
-  # Stage 2 – Deploy to Staging (no manual approval)
+  # Stage 2 – Deploy to Staging (automatic)
   # -------------------------------------------------------------------------
   - stage: staging
     displayName: 'Deploy to Staging'
     dependsOn: build
+    condition: succeeded()
     jobs:
       - deployment: deploy_staging
         displayName: 'Update ACA Job – Staging'
@@ -124,7 +126,7 @@ stages:
                     TRAINING_IMAGE: $[ dependencies.build.outputs['buildOutput.trainingImage'] ]
 
   # -------------------------------------------------------------------------
-  # Stage 3 – Deploy to Production (manual approval required)
+  # Stage 3 – Deploy to Production (manual approval)
   # -------------------------------------------------------------------------
   - stage: production
     displayName: 'Deploy to Production'
@@ -133,7 +135,7 @@ stages:
     jobs:
       - deployment: deploy_prod
         displayName: 'Update ACA Job – Production'
-        environment: production
+        environment: production           # manual approval configured in Azure DevOps
         strategy:
           runOnce:
             deploy:

@@ -4,14 +4,9 @@ __pycache__
 .env
 .git
 .gitignore
-.venv
 tests
 *.md
 !README.md
-Dockerfile
-docker-compose.yaml
-
-
 
 
 # Streamlit
@@ -33,5 +28,3 @@ tfplan
 .plans
 data
 
-
-.venv1
