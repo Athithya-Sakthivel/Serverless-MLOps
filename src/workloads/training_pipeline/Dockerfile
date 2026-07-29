@@ -1,50 +1,54 @@
 # syntax=docker/dockerfile:1.7
 
+# Keep the exact same Python minor version in both stages to avoid wheel/ABI drift.
+ARG PYTHON_IMAGE=docker.io/library/python:3.14.6-slim-bookworm@sha256:86f975aca15cf04a40b399eebede9aea7c82eae084d1f1a0a6ef6bcaae871a30
+
 # ============================================================
-# Stage 1: Build dependencies
+# Stage 1: Build dependencies into an isolated virtualenv
 # ============================================================
-FROM docker.io/library/python:3.14.6-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6 AS builder
+FROM ${PYTHON_IMAGE} AS builder
 
 WORKDIR /app
 
-# Install runtime dependencies and patch OS packages for CVEs
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
-    && apt-get upgrade -y \
-    && rm -rf /var/lib/apt/lists/*
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
-# Copy only the requirements file to leverage Docker layer caching
-COPY requirements.txt .
+# Copy only dependency metadata first so Docker can reuse this layer when app code changes.
+COPY requirements.txt ./
 
-# Install Python dependencies into the user's home directory (--user)
-# This avoids polluting the system Python and makes copying easy
-RUN pip install --no-cache-dir --user -r requirements.txt
+# Build a virtualenv that will be copied into the runtime image.
+# The cache mount speeds up repeat builds without polluting the final image.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m venv /opt/venv && \
+    /opt/venv/bin/python -m pip install --upgrade pip setuptools wheel && \
+    /opt/venv/bin/python -m pip install --no-cache-dir -r requirements.txt
 
 # ============================================================
 # Stage 2: Minimal runtime image
 # ============================================================
-FROM docker.io/library/python:3.14.6-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6 AS runtime
+FROM ${PYTHON_IMAGE} AS runtime
 
 WORKDIR /app
 
-# Create a non‑root user (app:app)
-RUN groupadd -r app && useradd -r -g app app
+ENV VIRTUAL_ENV=/opt/venv \
+    PATH=/opt/venv/bin:$PATH \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONUTF8=1
 
-# Copy installed Python packages from the builder stage
-COPY --from=builder /root/.local /home/app/.local
+# Create an unprivileged runtime account.
+RUN groupadd --system app && \
+    useradd --system --gid app --create-home --home-dir /home/app app
 
-# Copy only the production source code (no tests, no shell scripts, no docs)
-COPY elt/ ./elt/
-COPY train/ ./train/
-COPY utils/ ./utils/
-COPY main.py .
+# Copy only the prepared virtualenv and the production source tree.
+COPY --from=builder /opt/venv /opt/venv
+COPY --chown=app:app elt/ ./elt/
+COPY --chown=app:app train/ ./train/
+COPY --chown=app:app utils/ ./utils/
+COPY --chown=app:app main.py ./
 
-# Make pip‑installed scripts (like mlflow, onnxruntime tools) available
-ENV PATH=/home/app/.local/bin:$PATH
-ENV PYTHONUNBUFFERED=1
-
-# All subsequent commands run as the unprivileged user
 USER app
 
-# The training job entrypoint – identical to the ACA job command
 ENTRYPOINT ["python", "main.py"]

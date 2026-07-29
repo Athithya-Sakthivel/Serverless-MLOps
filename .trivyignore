@@ -2,13 +2,37 @@
 # Private Endpoints, VNet integration, and Network ACL default_action="Deny" are out of scope; Azure AD authentication, Shared Key access disabled, public blob access disabled, and TLS 1.2 are enforced.
 AZU-0012
 
-# GitPython is a transitive dependency only.
-# The application does not execute vulnerable GitPython code paths
-# (GHSA-6p8h-3wgx-97gf, GHSA-94p4-4cq8-9g67, GHSA-fjr4-x663-mwxc,
-# GHSA-r9mr-m37c-5fr3). Risk accepted until the dependency chain
-# provides a compatible fixed version.
 
-GHSA-6p8h-3wgx-97gf
-GHSA-94p4-4cq8-9g67
-GHSA-fjr4-x663-mwxc
-GHSA-r9mr-m37c-5fr3
+
+# Debian bookworm base image CVEs with no fixed bookworm package yet.
+# Temporary suppression only; will remove each entry as soon as Debian ships a patched package.
+
+# util-linux / bsdutils / mount / libblkid / libuuid
+CVE-2026-53615
+
+# gzip
+CVE-2026-41992
+
+# libacl
+CVE-2026-54369
+
+# ncurses / libncursesw6 / libtinfo6
+CVE-2025-69720
+
+# perl core / perl-base
+CVE-2026-13221
+
+# perl Archive::Tar
+CVE-2026-42496
+CVE-2026-42497
+CVE-2026-9538
+
+# perl IO::Compress
+CVE-2026-48962
+
+# perl core / pack-unpack / regex engine / Storable
+CVE-2026-57432
+CVE-2026-57433
+CVE-2026-8376
+
+# CVE-2026-8376 is only exploitable on 32-bit Perl builds, so it is lower risk on a normal amd64 container

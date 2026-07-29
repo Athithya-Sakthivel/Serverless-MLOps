@@ -31,6 +31,6 @@ steps:
     parameters:
       serviceDirectory: 'src/workloads/serving'
       pythonVersion: '3.14'
-      requirementsFile: 'src/workloads/serving/requirements-ci.txt'
+      requirementsFile: 'src/workloads/serving/requirements.txt'
       devRequirementsFile: 'src/workloads/serving/requirements-ci.txt'
       includeDocker: false
