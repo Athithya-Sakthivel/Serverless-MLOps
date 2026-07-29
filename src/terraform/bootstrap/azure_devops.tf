@@ -3,6 +3,12 @@
 # Variable groups were removed; AzureCLI@2 + service connections provide auth.
 # ------------------------------------------------------------------------------
 
+resource "azuredevops_environment" "staging" {
+  project_id   = azuredevops_project.this.id
+  name         = "staging"
+  description  = "Staging environment for pre‑production deployments"
+}
+
 locals {
   github_repo_id = "${var.github_owner}/${var.github_repo}"
 

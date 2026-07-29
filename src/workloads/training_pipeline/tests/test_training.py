@@ -67,11 +67,22 @@ def test_run_training_pipeline_integration(ci_sample_frame, monkeypatch, tmp_pat
         patch("train.orchestrator.mlflow.set_tag"),
         patch("train.orchestrator.mlflow.register_model"),
         patch("train.orchestrator.export_lightgbm_classifier_to_onnx") as mock_export_onnx,
+        # ---------- ADDED: mock the benchmark to avoid real ONNX file access ----------
+        patch("train.orchestrator.benchmark_onnx_model") as mock_benchmark,
     ):
         mock_start_run.return_value.__enter__.return_value = mock_run
         mock_export_onnx.return_value.sha256 = "abc123"
         mock_export_onnx.return_value.max_abs_probability_delta = 0.001
         mock_export_onnx.return_value.onnx_path = tmp_path / "model.onnx"
+
+        # Fake benchmark results – passes all performance thresholds
+        mock_benchmark.return_value = {
+            "p50_latency_ms": 1.0,
+            "p95_latency_ms": 1.0,
+            "p99_latency_ms": 1.0,
+            "throughput_rows_per_sec": 10000,
+        }
+        # -------------------------------------------------------------------------
 
         from train.orchestrator import run_training_pipeline
 

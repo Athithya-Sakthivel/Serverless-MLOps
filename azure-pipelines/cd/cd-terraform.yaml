@@ -1,12 +1,11 @@
 # ---------------------------------------------------------------------------
 # CD – Terraform Apply (manual trigger)
 #
-# Applies the infrastructure using the plan generated in CI.
-# Uses the `terraform-vars` variable group for credentials.
-# Triggered manually with approval from the "staging" environment.
+# Uses the terraform-vars variable group for credentials.
+# Run manually from the Azure DevOps UI.
 # ---------------------------------------------------------------------------
 
-trigger: none                                      # Manual only
+trigger: none
 
 resources:
   pipelines:
@@ -19,12 +18,12 @@ pool:
   vmImage: ubuntu-24.04
 
 variables:
-  - group: terraform-vars          # Same variable group as CI; includes PAT and org URL
+  - group: terraform-vars
 
 jobs:
   - deployment: apply_terraform
-    displayName: 'Plan and apply Terraform'
-    environment: staging          # Requires manual approval defined in Azure DevOps
+    displayName: 'Apply Terraform – Staging'
+    environment: staging
     strategy:
       runOnce:
         deploy:
@@ -33,7 +32,6 @@ jobs:
               clean: true
               fetchDepth: 1
 
-            # Phase 1 – Deploy everything EXCEPT Container Apps
             - task: AzureCLI@2
               displayName: 'Phase 1 – Infrastructure (skip ACA)'
               inputs:
@@ -45,20 +43,17 @@ jobs:
                   set -euo pipefail
                   cd "$(Build.SourcesDirectory)/src/terraform/main"
                   chmod +x ./run.sh
-
-                  export ARM_CLIENT_ID="${servicePrincipalId}"
-                  export ARM_TENANT_ID="${tenantId}"
-                  export ARM_OIDC_TOKEN="${idToken}"
+                  export ARM_CLIENT_ID="$servicePrincipalId"
+                  export ARM_TENANT_ID="$tenantId"
+                  export ARM_OIDC_TOKEN="$idToken"
                   export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
                   export ARM_USE_OIDC="true"
                   export TF_IN_AUTOMATION="true"
-
                   ./run.sh --create --env staging --skip-aca
               env:
                 AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
                 AZDO_PERSONAL_ACCESS_TOKEN: $(AZDO_PERSONAL_ACCESS_TOKEN)
 
-            # Phase 2 – Full deploy including Container Apps
             - task: AzureCLI@2
               displayName: 'Phase 2 – Full deploy with ACA'
               inputs:
@@ -70,14 +65,12 @@ jobs:
                   set -euo pipefail
                   cd "$(Build.SourcesDirectory)/src/terraform/main"
                   chmod +x ./run.sh
-
-                  export ARM_CLIENT_ID="${servicePrincipalId}"
-                  export ARM_TENANT_ID="${tenantId}"
-                  export ARM_OIDC_TOKEN="${idToken}"
+                  export ARM_CLIENT_ID="$servicePrincipalId"
+                  export ARM_TENANT_ID="$tenantId"
+                  export ARM_OIDC_TOKEN="$idToken"
                   export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
                   export ARM_USE_OIDC="true"
                   export TF_IN_AUTOMATION="true"
-
                   ./run.sh --create --env staging
               env:
                 AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)

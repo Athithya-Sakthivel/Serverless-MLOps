@@ -19,104 +19,55 @@ resources:
             - main
 
 parameters:
-  - name: mode
-    type: string
-    default: 'code'              # 'code' = build+deploy, 'model' = only update MODEL_VERSION
   - name: modelVersion
+    displayName: 'Model version to promote'
     type: string
-    default: ''
-  - name: canarySteps
-    type: object
-    default: [10, 50]           # traffic percentages
+    default: ''                     # empty → image‑only update
 
 pool:
   vmImage: ubuntu-24.04
 
 variables:
-  - group: sm-all-vars           # contains CONTAINER_APP_NAME, containerRegistry, STAGING_RG, etc.
+  - group: sm-all-vars
+  - name: kvName
+    value: 'kv-smstgmlf41930'
 
 stages:
-  - stage: staging
-    displayName: 'Canary Deploy to Staging'
+  - stage: canary
+    displayName: 'Canary Deployment'
     jobs:
-      - job: canary_staging
-        displayName: 'Canary deployment – staging'
-        steps:
-          - checkout: self
+      - deployment: canary_deploy
+        displayName: 'Run canary deployment'
+        environment: staging
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
 
-          # ------------------------------------------------------------------
-          # If mode == 'code', build the serving image
-          # ------------------------------------------------------------------
-          - ${{ if eq(parameters.mode, 'code') }}:
-            - task: AzureCLI@2
-              displayName: 'Build & push serving image'
-              inputs:
-                azureSubscription: 'azdo-oidc-cd'
-                scriptType: bash
-                scriptLocation: inlineScript
-                inlineScript: |
-                  set -euo pipefail
+                - task: AzureKeyVault@2
+                  displayName: 'Fetch secrets from Key Vault'
+                  inputs:
+                    azureSubscription: 'azdo-oidc-cd'
+                    KeyVaultName: $(kvName)
+                    SecretsFilter: 'azdo-pat'
 
-                  LOGIN_SERVER="$(az acr show --name $(containerRegistry) --query loginServer -o tsv)"
-                  IMAGE_TAG="serve-$(Build.SourceVersion)"
-
-                  az acr login -n $(containerRegistry)
-                  docker build \
-                    -f src/workloads/serving/Dockerfile \
-                    -t "${LOGIN_SERVER}/serving:${IMAGE_TAG}" \
-                    .
-                  docker push "${LOGIN_SERVER}/serving:${IMAGE_TAG}"
-
-                  echo "##vso[task.setvariable variable=servingImage]${LOGIN_SERVER}/serving:${IMAGE_TAG}"
-                addSpnToEnvironment: true
-
-          # ------------------------------------------------------------------
-          # Run canary deployment (image OR model update)
-          # ------------------------------------------------------------------
-          - task: AzureCLI@2
-            displayName: 'Canary deploy to staging'
-            inputs:
-              azureSubscription: 'azdo-oidc-cd'
-              scriptType: bash
-              scriptLocation: scriptPath
-              scriptPath: 'src/scripts/canary-deploy.sh'
-              arguments: >
-                --app-name "$(CONTAINER_APP_NAME)"           # e.g. aca-serve-stg
-                --resource-group "$(STAGING_RG)"
-                ${{ if eq(parameters.mode, 'code') }}:
-                  --image "$(servingImage)"
-                ${{ else }}:
-                  --model-version "${{ parameters.modelVersion }}"
-                --canary-steps "${{ join(parameters.canarySteps, ',') }}"
-                --k6-script "tests/load/k6-script.js"
-                --health-path "/health"
-                --ready-path "/ready"
-
-  - stage: production
-    displayName: 'Promote to Production'
-    dependsOn: staging
-    condition: succeeded()
-    jobs:
-      - job: canary_production
-        displayName: 'Canary deployment – production'
-        steps:
-          - checkout: self
-
-          - task: AzureCLI@2
-            displayName: 'Canary deploy to production'
-            inputs:
-              azureSubscription: 'azdo-oidc-cd'
-              scriptType: bash
-              scriptLocation: scriptPath
-              scriptPath: 'src/scripts/canary-deploy.sh'
-              arguments: >
-                --app-name "$(CONTAINER_APP_NAME)"           # e.g. aca-serve-prod
-                --resource-group "$(PROD_RG)"
-                ${{ if eq(parameters.mode, 'code') }}:
-                  --image "$(servingImage)"
-                ${{ else }}:
-                  --model-version "${{ parameters.modelVersion }}"
-                --canary-steps "${{ join(parameters.canarySteps, ',') }}"
-                --k6-script "tests/load/k6-script.js"
-                --health-path "/health"
-                --ready-path "/ready"
+                - task: AzureCLI@2
+                  displayName: 'Canary deployment'
+                  inputs:
+                    azureSubscription: 'azdo-oidc-cd'
+                    scriptType: bash
+                    scriptLocation: scriptPath
+                    scriptPath: 'src/scripts/canary-deploy.sh'
+                    arguments: >
+                      --app-name $(CONTAINER_APP_NAME)
+                      --resource-group $(STAGING_RG)
+                      ${{ if parameters.modelVersion }}
+                        --model-version ${{ parameters.modelVersion }}
+                      ${{ else }}
+                        --image $(containerRegistry).azurecr.io/serving:$(Build.SourceVersion)
+                      ${{ endif }}
+                      --canary-steps 10,50
+                      --k6-script tests/load/k6-script.js
+                  env:
+                    AZURE_DEVOPS_EXT_PAT: $(azdo-pat)

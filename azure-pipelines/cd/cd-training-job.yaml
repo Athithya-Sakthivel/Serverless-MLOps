@@ -1,9 +1,5 @@
 # ---------------------------------------------------------------------------
 # CD – Training Job
-#
-# Triggered by CI success for ELT or training code.
-# Builds the training image (if code changed), scans, pushes to ACR,
-# then updates the ACA Job in staging → manual approval → production.
 # ---------------------------------------------------------------------------
 
 trigger: none
@@ -27,7 +23,7 @@ pool:
   vmImage: ubuntu-24.04
 
 variables:
-  - group: sm-all-vars   # CONTAINER_APP_JOB_NAME_STAGING, CONTAINER_APP_JOB_NAME_PROD, containerRegistry, STAGING_RG, PROD_RG, etc.
+  - group: sm-all-vars
 
 stages:
   - stage: build
