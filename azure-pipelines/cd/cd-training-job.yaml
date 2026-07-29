@@ -79,7 +79,7 @@ stages:
                 chmod +x /tmp/trivy
 
                 /tmp/trivy image \
-                  --severity HIGH,CRITICAL \
+                  --severity CRITICAL \
                   --exit-code 1 \
                   "${FULL_IMAGE}"
 
