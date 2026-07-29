@@ -54,9 +54,9 @@ markdown-it-py==4.2.0
 MarkupSafe==3.0.3
 matplotlib==3.11.1
 mdurl==0.1.2
-mlflow==3.14.0
-mlflow-skinny==3.14.0
-mlflow-tracing==3.14.0
+mlflow==3.13.0
+mlflow-skinny==3.13.0
+mlflow-tracing==3.13.0
 msgpack==1.2.1
 multidict==6.7.1
 narwhals==2.24.0
