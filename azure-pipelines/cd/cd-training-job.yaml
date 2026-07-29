@@ -1,9 +1,12 @@
 # ---------------------------------------------------------------------------
 # CD – Training Job
 #
-# Triggered by CI success for ELT or training code on main.
-# Builds the training image, scans with Trivy, pushes to ACR,
-# then updates the ACA Job in staging → manual approval → production.
+# Triggered automatically when **either** the ELT CI or the ML-Training CI
+# pipeline succeeds on the `main` branch.
+#
+# Builds the training Docker image, scans it with Trivy, pushes to ACR,
+# then updates the ACA Job in staging. After manual approval, promotes
+# the same image to production.
 # ---------------------------------------------------------------------------
 
 trigger: none
@@ -11,13 +14,13 @@ trigger: none
 resources:
   pipelines:
     - pipeline: ciElt
-      source: ci-elt
+      source: Serverless-MLOps-elt-ci        # exact name of the ELT CI pipeline
       trigger:
         branches:
           include:
             - main
     - pipeline: ciMlTraining
-      source: ci-ml-training
+      source: Serverless-MLOps-ml-training-ci  # exact name of the Training CI pipeline
       trigger:
         branches:
           include:
@@ -27,17 +30,17 @@ pool:
   vmImage: ubuntu-24.04
 
 variables:
-  - group: sm-all-vars
+  - group: sm-all-vars                     # single variable group – populated by Terraform
 
 stages:
   # -------------------------------------------------------------------------
-  # Stage 1 – Build & Push
+  # Stage 1 – Build, scan, and push the training image
   # -------------------------------------------------------------------------
   - stage: build
     displayName: 'Build & Push Training Image'
     jobs:
       - job: build_push
-        displayName: 'Build and push training image'
+        displayName: 'Build, scan and push'
         steps:
           - checkout: self
             clean: true
@@ -75,7 +78,7 @@ stages:
                   --severity HIGH,CRITICAL \
                   --exit-code 1 \
                   "${FULL_IMAGE}" || {
-                    echo "Trivy scan failed — HIGH/CRITICAL vulnerabilities found"
+                    echo "Trivy scan failed – HIGH/CRITICAL vulnerabilities found"
                     exit 1
                   }
 
@@ -87,7 +90,7 @@ stages:
             name: buildOutput
 
   # -------------------------------------------------------------------------
-  # Stage 2 – Deploy to Staging
+  # Stage 2 – Deploy to Staging (no manual approval)
   # -------------------------------------------------------------------------
   - stage: staging
     displayName: 'Deploy to Staging'
@@ -121,7 +124,7 @@ stages:
                     TRAINING_IMAGE: $[ dependencies.build.outputs['buildOutput.trainingImage'] ]
 
   # -------------------------------------------------------------------------
-  # Stage 3 – Deploy to Production (manual approval)
+  # Stage 3 – Deploy to Production (manual approval required)
   # -------------------------------------------------------------------------
   - stage: production
     displayName: 'Deploy to Production'
