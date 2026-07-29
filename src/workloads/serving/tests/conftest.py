@@ -18,18 +18,28 @@ if _SERVE_DIR not in sys.path:
     sys.path.insert(0, _SERVE_DIR)
 
 
-# -- prevent real Azure / telemetry -----------------------------------------
+# -- session-scoped environment setup and safety guards ---------------------
 @pytest.fixture(autouse=True, scope="session")
 def _block_azure_credential() -> Iterator[None]:
+    """Prevent any real Azure credential from being created."""
     with patch("azure.identity.DefaultAzureCredential", return_value=MagicMock()):
         yield
 
 
 @pytest.fixture(autouse=True, scope="session")
 def _set_required_env() -> Iterator[None]:
+    """
+    Ensure the minimum environment variables needed to construct the
+    application configuration are present, and disable Azure resource
+    detectors that can hang on non‑Azure hosts.
+    """
     vars_to_set = {
         "MLFLOW_TRACKING_URI": "http://dummy-tracking",
         "APPLICATIONINSIGHTS_CONNECTION_STRING": "",
+        # Prevent Azure IMDS / VM resource detector probes from blocking
+        "OTEL_EXPERIMENTAL_RESOURCE_DETECTORS": "otel",
+        # Disable statsbeat which also probes IMDS
+        "APPLICATIONINSIGHTS_STATSBEAT_DISABLED_ALL": "TRUE",
     }
     original = {}
     for key, value in vars_to_set.items():
@@ -67,31 +77,26 @@ def test_app(
     FastAPI TestClient with telemetry and model loading fully mocked.
     The lifespan runs instantly; all endpoints work.
     """
-    # 1. Mock telemetry so that app.py's module‑level init_telemetry is a no‑op
+    # Mock the model‑loading calls used in the lifespan
     with (
-        patch("app.init_telemetry", return_value=None),
-        patch("app.shutdown_telemetry", return_value=None),
+        patch(
+            "model.registry.ModelRegistry.resolve",
+            return_value=MagicMock(
+                model_name="test",
+                model_version="1",
+                run_id="run123",
+                artifact_uri="",
+            ),
+        ),
+        patch(
+            "model.loader.ModelLoader.load",
+            return_value=MagicMock(),
+        ),
     ):
-        # 2. Mock the model‑loading calls used in the lifespan
-        with (
-            patch(
-                "model.registry.ModelRegistry.resolve",
-                return_value=MagicMock(
-                    model_name="test",
-                    model_version="1",
-                    run_id="run123",
-                    artifact_uri="",
-                ),
-            ),
-            patch(
-                "model.loader.ModelLoader.load",
-                return_value=MagicMock(),  # fake ONNX session
-            ),
-        ):
-            from api.dependencies import get_model_loader, get_predictor
-            from app import app
+        from api.dependencies import get_model_loader, get_predictor
+        from app import app
 
-    # 3. Override FastAPI dependencies for request handlers
+    # Override FastAPI dependencies for request handlers
     app.dependency_overrides[get_model_loader] = lambda: mock_model_loader
     app.dependency_overrides[get_predictor] = lambda: mock_predictor
 
