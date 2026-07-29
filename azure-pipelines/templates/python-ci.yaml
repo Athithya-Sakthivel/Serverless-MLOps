@@ -1,8 +1,18 @@
-# Reusable CI template for Python services.
+# ---------------------------------------------------------------------------
+# Reusable CI template for Python services – two‑venv strategy
 #
-# Creates a virtual environment in the repo root, installs dependencies,
-# then runs linting, type-checking, tests, dependency audit, and a Trivy
-# filesystem vulnerability scan.
+# Creates two separate virtual environments to avoid dependency conflicts:
+#   • .venv-prod  – only production requirements (used for pip check & audit)
+#   • .venv-ci    – production + CI tools (used for lint, type‑check, tests)
+#
+# Parameters:
+#   serviceDirectory     – path relative to repo root (e.g. src/workloads/…)
+#   pythonVersion        – Python version to install
+#   requirementsFile     – production requirements file
+#   devRequirementsFile  – CI‑only requirements file (ruff, basedpyright, pytest, pip‑audit)
+#   includeDocker        – not used in CI; kept for backwards compatibility
+#   preTestSteps         – optional extra steps inserted before pytest
+# ---------------------------------------------------------------------------
 
 parameters:
   - name: serviceDirectory
@@ -38,8 +48,11 @@ steps:
       versionSpec: '${{ parameters.pythonVersion }}'
       architecture: 'x64'
 
+  # --------------------------------------------------------------------------
+  # Pip cache – keyed on both requirements files
+  # --------------------------------------------------------------------------
   - task: Cache@2
-    displayName: 'Cache pip'
+    displayName: 'Cache pip packages'
     inputs:
       key: 'pip | "$(Agent.OS)" | "python-${{ parameters.pythonVersion }}" | $(Build.SourcesDirectory)/${{ parameters.requirementsFile }} | $(Build.SourcesDirectory)/${{ parameters.devRequirementsFile }}'
       restoreKeys: |
@@ -47,47 +60,78 @@ steps:
         pip | "$(Agent.OS)"
       path: $(Pipeline.Workspace)/.cache/pip
 
+  # --------------------------------------------------------------------------
+  # 1. Production virtual environment – only production deps
+  # --------------------------------------------------------------------------
   - bash: |
       set -euo pipefail
-      python -m venv .venv
-      source .venv/bin/activate
+      python -m venv .venv-prod
+      source .venv-prod/bin/activate
+      python -m pip install --upgrade pip setuptools wheel
+      pip install --cache-dir "$(Pipeline.Workspace)/.cache/pip" \
+        -r "$(Build.SourcesDirectory)/${{ parameters.requirementsFile }}"
+      python -m pip check
+    displayName: 'Install production dependencies'
+    workingDirectory: $(Build.SourcesDirectory)
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+
+  # --------------------------------------------------------------------------
+  # 2. CI virtual environment – production + CI tools
+  # --------------------------------------------------------------------------
+  - bash: |
+      set -euo pipefail
+      python -m venv .venv-ci
+      source .venv-ci/bin/activate
       python -m pip install --upgrade pip setuptools wheel
       pip install --cache-dir "$(Pipeline.Workspace)/.cache/pip" \
         -r "$(Build.SourcesDirectory)/${{ parameters.requirementsFile }}" \
         -r "$(Build.SourcesDirectory)/${{ parameters.devRequirementsFile }}"
       python -m pip check
-    displayName: 'Install dependencies'
+    displayName: 'Install CI dependencies'
     workingDirectory: $(Build.SourcesDirectory)
     env:
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
 
+  # --------------------------------------------------------------------------
+  # Linting & formatting (uses CI venv)
+  # --------------------------------------------------------------------------
   - bash: |
       set -euo pipefail
-      source .venv/bin/activate
+      source .venv-ci/bin/activate
       ruff check "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
     displayName: 'Ruff lint'
     workingDirectory: $(Build.SourcesDirectory)
 
   - bash: |
       set -euo pipefail
-      source .venv/bin/activate
+      source .venv-ci/bin/activate
       ruff format --check "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
     displayName: 'Ruff format check'
     workingDirectory: $(Build.SourcesDirectory)
 
+  # --------------------------------------------------------------------------
+  # Type‑checking (uses CI venv)
+  # --------------------------------------------------------------------------
   - bash: |
       set -euo pipefail
-      source .venv/bin/activate
+      source .venv-ci/bin/activate
       basedpyright "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}"
     displayName: 'basedpyright type-check'
     workingDirectory: $(Build.SourcesDirectory)
 
+  # --------------------------------------------------------------------------
+  # Optional pre‑test steps (e.g. smoke tests)
+  # --------------------------------------------------------------------------
   - ${{ each step in parameters.preTestSteps }}:
     - ${{ step }}
 
+  # --------------------------------------------------------------------------
+  # Unit tests (uses CI venv)
+  # --------------------------------------------------------------------------
   - bash: |
       set -euo pipefail
-      source .venv/bin/activate
+      source .venv-ci/bin/activate
       pytest "$(Build.SourcesDirectory)/${{ parameters.serviceDirectory }}/tests" \
         -v \
         --junitxml="$(Build.SourcesDirectory)/test-results.xml"
@@ -103,14 +147,20 @@ steps:
       searchFolder: '$(Build.SourcesDirectory)'
       testRunTitle: '${{ parameters.serviceDirectory }} tests'
 
+  # --------------------------------------------------------------------------
+  # Dependency vulnerability audit (uses production venv)
+  # --------------------------------------------------------------------------
   - bash: |
       set -euo pipefail
-      source .venv/bin/activate
+      source .venv-prod/bin/activate
       mkdir -p "$(Build.ArtifactStagingDirectory)/security"
       pip-audit -f json -o "$(Build.ArtifactStagingDirectory)/security/pip-audit.json"
-    displayName: 'Dependency vulnerability audit'
+    displayName: 'Dependency vulnerability audit (production deps)'
     workingDirectory: $(Build.SourcesDirectory)
 
+  # --------------------------------------------------------------------------
+  # Trivy filesystem scan (no venv needed)
+  # --------------------------------------------------------------------------
   - bash: |
       set -euo pipefail
       mkdir -p "$(Build.ArtifactStagingDirectory)/security"
