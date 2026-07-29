@@ -5,10 +5,9 @@ cd /workspace
 
 make clean
 
-source .venv/bin/activate
-pip install -q -r src/workloads/training_pipeline/requirements.txt
+pip install -q -r src/workloads/serving/requirements-ci.txt --break-system-packages
 
-cd src/workloads/training_pipeline
+cd src/workloads/serving
 
 ruff check . --fix && ruff format . && basedpyright . && pytest tests/ -v
 

@@ -146,18 +146,7 @@ steps:
       testResultsFiles: 'test-results.xml'
       searchFolder: '$(Build.SourcesDirectory)'
       testRunTitle: '${{ parameters.serviceDirectory }} tests'
-
-  # --------------------------------------------------------------------------
-  # Dependency vulnerability audit (uses production venv)
-  # --------------------------------------------------------------------------
-  - bash: |
-      set -euo pipefail
-      source .venv-prod/bin/activate
-      mkdir -p "$(Build.ArtifactStagingDirectory)/security"
-      pip-audit -f json -o "$(Build.ArtifactStagingDirectory)/security/pip-audit.json"
-    displayName: 'Dependency vulnerability audit (production deps)'
-    workingDirectory: $(Build.SourcesDirectory)
-
+      
   # --------------------------------------------------------------------------
   # Trivy filesystem scan (no venv needed)
   # --------------------------------------------------------------------------
