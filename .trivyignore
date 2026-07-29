@@ -36,3 +36,10 @@ CVE-2026-57433
 CVE-2026-8376
 
 # CVE-2026-8376 is only exploitable on 32-bit Perl builds, so it is lower risk on a normal amd64 container
+
+
+# Debian Bookworm - waiting for upstream security update
+CVE-2025-7458
+
+# Debian marks this as will_not_fix for Bookworm
+CVE-2023-45853
