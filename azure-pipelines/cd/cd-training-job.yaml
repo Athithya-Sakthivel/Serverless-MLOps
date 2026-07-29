@@ -1,9 +1,16 @@
 # ---------------------------------------------------------------------------
-# CD – Training Job
+# CD – Training Job (staging only, no approvals)
 #
-# Triggered by CI success for ELT or training code on main.
-# Builds the training image, scans with Trivy, pushes to ACR,
-# then updates the ACA Job in staging → manual approva
+# Triggered automatically when either the ELT CI or the ML-Training CI
+# pipeline succeeds on the `main` branch.
+#
+# Stages:
+#   1. Build, scan, and push the training container image
+#   2. Deploy to staging (automatic)
+#
+# No production stage – only staging exists in this environment.
+# Uses a regular job for staging to avoid environment approval gates.
+# ---------------------------------------------------------------------------
 
 trigger: none
 
@@ -26,7 +33,7 @@ pool:
   vmImage: ubuntu-24.04
 
 variables:
-  - group: sm-all-vars          # Contains non-secret configuration (storage, MLflow, ACR, etc.)
+  - group: sm-all-vars
 
 stages:
   # --------------------------------------------------------------------------
@@ -51,10 +58,7 @@ stages:
               inlineScript: |
                 set -euo pipefail
 
-                # ------------------------------------------------------------------
-                # Resolve the ACR login server and construct the immutable image tag
-                # (Git commit SHA).  The variable group already contains the ACR name.
-                # ------------------------------------------------------------------
+                # Resolve ACR login server and construct immutable image tag
                 LOGIN_SERVER="$(az acr show --name "$CONTAINER_REGISTRY" --query loginServer -o tsv)"
                 IMAGE_TAG="training-${BUILD_SOURCE_VERSION}"
                 FULL_IMAGE="${LOGIN_SERVER}/training:${IMAGE_TAG}"
@@ -66,9 +70,7 @@ stages:
                   -t "${FULL_IMAGE}" \
                   src/workloads/training_pipeline
 
-                # ------------------------------------------------------------------
-                # Trivy vulnerability scan – fail on HIGH or CRITICAL findings
-                # ------------------------------------------------------------------
+                # Trivy vulnerability scan – fail on HIGH or CRITICAL
                 echo "##[section]Scanning image with Trivy (HIGH/CRITICAL)"
                 TRIVY_VERSION="0.72.0"
                 curl -fsSL --retry 3 --connect-timeout 10 \
@@ -82,28 +84,25 @@ stages:
                   --exit-code 1 \
                   "${FULL_IMAGE}"
 
-                # ------------------------------------------------------------------
-                # Push the image to ACR
-                # ------------------------------------------------------------------
+                # Push the image
                 echo "##[section]Pushing image: ${FULL_IMAGE}"
                 docker push "${FULL_IMAGE}"
 
-                # Make the full image reference available to the staging job
+                # Export the image reference for the staging stage
                 echo "##vso[task.setvariable variable=trainingImage;isOutput=true]${FULL_IMAGE}"
               env:
-                CONTAINER_REGISTRY: $(containerRegistry)     # from sm-all-vars
-                BUILD_SOURCE_VERSION: $(Build.SourceVersion) # pipeline variable
-            name: buildOutput    # Name required for cross-stage output variable
+                CONTAINER_REGISTRY: $(containerRegistry)
+                BUILD_SOURCE_VERSION: $(Build.SourceVersion)
+            name: buildOutput
 
   # --------------------------------------------------------------------------
-  # Stage 2 – Deploy the new training image to staging (automatic)
+  # Stage 2 – Deploy to staging (automatic, no approval)
   # --------------------------------------------------------------------------
   - stage: staging
     displayName: 'Deploy to Staging'
     dependsOn: build
     condition: succeeded()
     jobs:
-      # Regular job (not deployment) – bypasses environment approvals.
       - job: deploy_staging
         displayName: 'Update ACA Job – Staging'
         steps:
@@ -116,7 +115,7 @@ stages:
               inlineScript: |
                 set -euo pipefail
 
-                # Install / upgrade the containerapp extension (not pre-installed on agents)
+                # Ensure the containerapp extension is available
                 az extension add --name containerapp --upgrade --yes 2>/dev/null || true
 
                 echo "Updating training job: $CONTAINER_APP_JOB_NAME_STAGING"
@@ -127,9 +126,8 @@ stages:
                   --output none
 
                 echo "Staging deployment complete."
-            env:
-              # Non-secret values from the variable group
-              CONTAINER_APP_JOB_NAME_STAGING: $(CONTAINER_APP_JOB_NAME)  # e.g. acaj-train-stg
-              STAGING_RG: $(STAGING_RG)                                  # e.g. rg-sm-artifacts-stg
-              # Image reference from the build stage
-              TRAINING_IMAGE: $[ dependencies.build.outputs['buildOutput.trainingImage'] ]
+              env:
+                CONTAINER_APP_JOB_NAME_STAGING: $(CONTAINER_APP_JOB_NAME)
+                STAGING_RG: $(STAGING_RG)
+                # Regular‑job cross‑stage reference (quoted for YAML safety)
+                TRAINING_IMAGE: '$[ stageDependencies.build.build_push.outputs[''buildOutput.trainingImage''] ]'

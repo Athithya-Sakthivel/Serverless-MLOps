@@ -3,11 +3,15 @@
 
 cd /workspace
 
+
+python3 -m venv .venv_serve && source .venv_serve/bin/activate
+pip install -r src/workloads/serving/requirements.txt
+pip install -r src/workloads/serving/requirements-ci.txt
+
 make clean
 
-pip install -q -r src/workloads/serving/requirements-ci.txt --break-system-packages
 
-cd src/workloads/serving
+cd /workspace/src/workloads/serving
 
 ruff check . --fix && ruff format . && basedpyright . && pytest tests/ -v
 

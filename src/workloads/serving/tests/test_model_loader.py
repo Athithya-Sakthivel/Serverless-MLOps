@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 from model.loader import ModelLoader
@@ -42,7 +42,7 @@ def test_load_creates_session(mock_registry: MagicMock, tmp_path: Path) -> None:
 
         mock_download.assert_called_once_with(
             artifact_uri="models:/test_model/1/onnx/model.onnx",
-            dst_path=pytest.any(str),
+            dst_path=ANY,
             tracking_uri="test-uri",
             registry_uri=None,
         )

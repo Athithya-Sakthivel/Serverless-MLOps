@@ -82,8 +82,7 @@ def test_resolve_caches_result(config_with_version: ServingConfig) -> None:
         )
         registry = ModelRegistry(config_with_version)
         registry.resolve()
-        registry.resolve()  # second call
-        # Client should have been called only once
+        registry.resolve()
         mock_client.return_value.get_model_version.assert_called_once()
 
 

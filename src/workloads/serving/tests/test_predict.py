@@ -10,7 +10,6 @@ from schemas.response import PredictResponse
 
 
 def test_predict_success(test_app: TestClient, mock_predictor: MagicMock) -> None:
-    # Setup mock predictor to return a valid response
     mock_predictor.predict.return_value = PredictResponse(
         probabilities=[0.8, 0.2],
         prediction=[1, 0],
@@ -27,10 +26,8 @@ def test_predict_success(test_app: TestClient, mock_predictor: MagicMock) -> Non
 
 
 def test_predict_invalid_input_shape(test_app: TestClient, mock_predictor: MagicMock) -> None:
-    # The Pydantic schema requires at least one feature vector, and all rows same length.
-    # Sending an empty list is caught by the request validator.
     response = test_app.post("/predict", json={"features": []})
-    assert response.status_code == 422  # Validation error
+    assert response.status_code == 422
 
 
 def test_predict_raises_value_error(test_app: TestClient, mock_predictor: MagicMock) -> None:

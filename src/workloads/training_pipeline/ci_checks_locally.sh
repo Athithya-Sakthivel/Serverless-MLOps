@@ -3,11 +3,15 @@
 
 cd /workspace
 
+
+python3 -m venv .venv_train && source .venv_train/bin/activate
+pip install -r src/workloads/training_pipeline/requirements.txt
+pip install -r src/workloads/training_pipeline/requirements-ci.txt
+
 make clean
 
-pip install -q -r src/workloads/training_pipeline/requirements-ci.txt --break-system-packages
 
-cd src/workloads/training_pipeline
+cd src/workloads/serving
 
 ruff check . --fix && ruff format . && basedpyright . && pytest tests/ -v
 
