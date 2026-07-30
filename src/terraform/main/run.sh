@@ -17,17 +17,14 @@
 #   9. Nuclear destroy: deletes resource group (waits for completion), purges
 #      soft-deleted Key Vault & ML workspace, deletes state blob, breaks locks.
 #  10. --create after --destroy always sees a clean subscription and empty state.
-#  11. Event Grid subscription is created via Azure CLI after Terraform apply,
-#      using the same naming derivation as locals.tf – no dependency on
-#      `tofu output`.
-#  12. Azure DevOps pipeline + variable‑group variables are auto‑derived from
+#  11. Azure DevOps pipeline + variable‑group variables are auto‑derived from
 #      the subscription and git remote.
-#  13. Azure DevOps provider credentials are mapped from TF_VAR_AZDO_* to plain
+#  12. Azure DevOps provider credentials are mapped from TF_VAR_AZDO_* to plain
 #      env vars so the provider block works without hardcoding.
-#  14. Every --create regenerates the plan from scratch (never reuses a stale plan).
-#  15. --skip-aca flag deploys everything except Container App/Job for slow
+#  13. Every --create regenerates the plan from scratch (never reuses a stale plan).
+#  14. --skip-aca flag deploys everything except Container App/Job for slow
 #      subscriptions; a second --create completes the full deployment.
-#  16. Auto‑imports orphaned ACA resources from previous failed applies so
+#  15. Auto‑imports orphaned ACA resources from previous failed applies so
 #      that the pipeline is self‑healing.
 #
 # Local development (az login first):
@@ -234,10 +231,6 @@ run_apply_plan() {
   tofu apply -input=false -lock-timeout=5m -auto-approve "$PLAN_FILE_INPUT"
 }
 
-# ---------------------------------------------------------------------------
-# 10. Event Grid subscription management (outside Terraform)
-# ---------------------------------------------------------------------------
-
 derive_names() {
   local sub_suffix="${TF_VAR_subscription_id: -6}"
   local project_abbr="sm"
@@ -255,63 +248,6 @@ derive_names() {
   SUBSCRIPTION_NAME="eg-${project_abbr}-${env_abbr}-raw-monthly"
   SERVE_APP_NAME="aca-serve-${env_abbr}"
   TRAIN_JOB_NAME="acaj-train-${env_abbr}"
-}
-create_event_subscription() {
-  derive_names
-
-  local identity_id="/subscriptions/${TF_VAR_subscription_id}/resourceGroups/${RG_NAME}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/eg-sm-${ENVIRONMENT}-raw-monthly-identity"
-
-  if az eventgrid system-topic event-subscription show \
-    -g "$RG_NAME" --system-topic-name "$SYSTEM_TOPIC_NAME" \
-    -n "$SUBSCRIPTION_NAME" --subscription "$TF_VAR_subscription_id" &>/dev/null; then
-    log "Event Subscription '$SUBSCRIPTION_NAME' already exists – updating delivery identity"
-    az eventgrid system-topic event-subscription update \
-      -g "$RG_NAME" --system-topic-name "$SYSTEM_TOPIC_NAME" \
-      -n "$SUBSCRIPTION_NAME" \
-      --delivery-identity managed \
-      --delivery-identity-resource-id "$identity_id" \
-      --output none || true
-    return 0
-  fi
-
-  local queue_id="/subscriptions/${TF_VAR_subscription_id}/resourceGroups/${RG_NAME}/providers/Microsoft.Storage/storageAccounts/${STORAGE_ACCOUNT_NAME}/queueServices/default/queues/${QUEUE_NAME}"
-
-  log "Creating Event Subscription '$SUBSCRIPTION_NAME' ..."
-  az eventgrid system-topic event-subscription create \
-    -g "$RG_NAME" \
-    --system-topic-name "$SYSTEM_TOPIC_NAME" \
-    -n "$SUBSCRIPTION_NAME" \
-    --subscription "$TF_VAR_subscription_id" \
-    --included-event-types Microsoft.Storage.BlobCreated \
-    --subject-begins-with "/blobServices/default/containers/raw/blobs/monthly/" \
-    --subject-ends-with .parquet \
-    --endpoint-type storagequeue \
-    --endpoint "$queue_id" \
-    --delivery-identity managed \
-    --delivery-identity-resource-id "$identity_id" \
-    --output none || {
-      log "Failed to create Event Subscription"
-      return 1
-    }
-  log "Event Subscription '$SUBSCRIPTION_NAME' created"
-}
-
-
-delete_event_subscription() {
-  derive_names
-
-  if ! az eventgrid system-topic event-subscription show \
-    -g "$RG_NAME" --system-topic-name "$SYSTEM_TOPIC_NAME" \
-    -n "$SUBSCRIPTION_NAME" --subscription "$TF_VAR_subscription_id" &>/dev/null; then
-    log "Event Subscription '$SUBSCRIPTION_NAME' does not exist"
-    return 0
-  fi
-
-  log "Deleting Event Subscription '$SUBSCRIPTION_NAME'..."
-  az eventgrid system-topic event-subscription delete \
-    -g "$RG_NAME" --system-topic-name "$SYSTEM_TOPIC_NAME" \
-    -n "$SUBSCRIPTION_NAME" --subscription "$TF_VAR_subscription_id" --yes || true
-  log "Event Subscription deleted"
 }
 
 # ---------------------------------------------------------------------------
@@ -547,17 +483,12 @@ case "$MODE" in
     else
       log "applying full plan $PLAN_FILE"
       tofu apply -input=false -lock-timeout=5m -auto-approve "$PLAN_FILE"
-
-      log "wiring Event Grid subscription"
-      create_event_subscription || log "Event Subscription creation failed; check logs"
     fi
     ;;
   --apply-plan) run_apply_plan ;;
   --destroy)
     $YES_DELETE || fail "--yes-delete required"
     [[ -f "$VAR_FILE" ]] || fail "variable file not found: $VAR_FILE"
-
-    delete_event_subscription
     nuclear_destroy
     ;;
   *) usage ;;
