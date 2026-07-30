@@ -19,9 +19,10 @@ resource "azurerm_user_assigned_identity" "eventgrid_delivery" {
 
 resource "azurerm_role_assignment" "eventgrid_queue_sender" {
   scope                = var.storage_account_id
-  role_definition_name = "Storage Queue Data Contributor"
+  role_definition_name = "Storage Queue Data Message Sender"   # was "Storage Queue Data Contributor"
   principal_id         = azurerm_user_assigned_identity.eventgrid_delivery.principal_id
 }
+
 
 # Event Grid subscription is created by run.sh after Terraform apply,
 # and deleted by run.sh before destroy. This avoids the persistent

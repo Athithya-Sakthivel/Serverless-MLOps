@@ -256,14 +256,21 @@ derive_names() {
   SERVE_APP_NAME="aca-serve-${env_abbr}"
   TRAIN_JOB_NAME="acaj-train-${env_abbr}"
 }
-
 create_event_subscription() {
   derive_names
+
+  local identity_id="/subscriptions/${TF_VAR_subscription_id}/resourceGroups/${RG_NAME}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/eg-sm-${ENVIRONMENT}-raw-monthly-identity"
 
   if az eventgrid system-topic event-subscription show \
     -g "$RG_NAME" --system-topic-name "$SYSTEM_TOPIC_NAME" \
     -n "$SUBSCRIPTION_NAME" --subscription "$TF_VAR_subscription_id" &>/dev/null; then
-    log "Event Subscription '$SUBSCRIPTION_NAME' already exists"
+    log "Event Subscription '$SUBSCRIPTION_NAME' already exists – updating delivery identity"
+    az eventgrid system-topic event-subscription update \
+      -g "$RG_NAME" --system-topic-name "$SYSTEM_TOPIC_NAME" \
+      -n "$SUBSCRIPTION_NAME" \
+      --delivery-identity managed \
+      --delivery-identity-resource-id "$identity_id" \
+      --output none || true
     return 0
   fi
 
@@ -279,12 +286,16 @@ create_event_subscription() {
     --subject-begins-with "/blobServices/default/containers/raw/blobs/monthly/" \
     --subject-ends-with .parquet \
     --endpoint-type storagequeue \
-    --endpoint "$queue_id" >/dev/null || {
+    --endpoint "$queue_id" \
+    --delivery-identity managed \
+    --delivery-identity-resource-id "$identity_id" \
+    --output none || {
       log "Failed to create Event Subscription"
       return 1
     }
   log "Event Subscription '$SUBSCRIPTION_NAME' created"
 }
+
 
 delete_event_subscription() {
   derive_names
