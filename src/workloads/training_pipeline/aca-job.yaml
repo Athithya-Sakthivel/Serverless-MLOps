@@ -1,47 +1,77 @@
-# aca-job.yaml – Complete Azure Container App Job definition with event trigger
-# Place this file under version control in src/workloads/training_pipeline/
+# =============================================================================
+# aca-job.yaml — Complete Azure Container App Job definition (event‑triggered)
+#
+# This file is the **single source of truth** for the training job shape.
+# Every deploy reads this template, replaces all ${VAR} placeholders with
+# real values from the pipeline environment, and sends it to Azure via
+# `az containerapp job update --yaml`.
+#
+# Important:
+#   • The job MUST have `triggerType: Event` and a valid `eventTriggerConfig`
+#     block.  Using `--image` alone in the CLI strips this and resets the job
+#     to `Manual`, silently breaking the data pipeline.
+#   • All placeholders use `${VAR}` syntax so `envsubst` can fill them.
+#   • The CD pipeline exports the needed variables before calling `envsubst`.
+# =============================================================================
+
 properties:
-  triggerType: Event
+  triggerType: Event                     # Event‑driven (queue scale rule)
+
   configuration:
-    replicaTimeoutInSeconds: 1800
-    replicaRetryLimit: 1
+    replicaTimeoutInSeconds: 1800        # 30 min – enough for ELT + training
+    replicaRetryLimit: 1                 # retry once on failure
+
     eventTriggerConfig:
-      parallelism: 1
-      replicaCompletionCount: 1
+      parallelism: 1                     # one execution at a time
+      replicaCompletionCount: 1          # all replicas must complete
+
       scale:
-        minExecutions: 0
+        minExecutions: 0                 # scale to zero when no messages
         maxExecutions: 1
         pollingIntervalInSeconds: 30
+
         rules:
           - name: training-queue
-            type: azure-queue
+            type: azure-queue            # Azure Storage Queue scaler
             metadata:
-              accountName: <STORAGE_ACCOUNT_NAME>   # e.g. smstgartifactsf41930
-              queueName: <STORAGE_QUEUE_NAME>       # e.g. smtrainqueue-stg
-              queueLength: "1"
+              accountName: ${STORAGE_ACCOUNT_NAME}   # filled at deploy time
+              queueName:   ${STORAGE_QUEUE_NAME}
+              queueLength: "1"                       # trigger on ≥1 message
+
   template:
     containers:
       - name: train
-        image: PLACEHOLDER                         # replaced by CD pipeline
+        image: ${TRAINING_IMAGE}         # immutable tag built by the CD pipeline
         resources:
           cpu: 2.0
           memory: "4Gi"
-        command: ["sh", "-c"]
-        args: ["python main.py"]                  # your actual entry point
+
+        # The real entry point of the training pipeline (ELT → Train → MLflow)
+        command: ["python", "main.py"]
+
         env:
+          # ---- Mode -----------------------------------------------------------------
           - name: MODE
             value: train
+
+          # ---- Storage containers ----------------------------------------------------
           - name: RAW_CONTAINER_NAME
             value: raw
           - name: CLEAN_CONTAINER_NAME
             value: clean
           - name: CHECKPOINT_CONTAINER_NAME
             value: checkpoints
-          - name: STORAGE_ACCOUNT_NAME
-            value: <STORAGE_ACCOUNT_NAME>
+
+          # ---- Azure Storage account (used by DefaultAzureCredential) ---------------
+          - name: AZURE_STORAGE_ACCOUNT_NAME
+            value: ${STORAGE_ACCOUNT_NAME}
+
+          # ---- Queue name (for the training job to know where to pull from) ---------
           - name: STORAGE_QUEUE_NAME
-            value: <STORAGE_QUEUE_NAME>
+            value: ${STORAGE_QUEUE_NAME}
+
+          # ---- MLflow / Azure ML workspace ------------------------------------------
           - name: MLFLOW_TRACKING_URI
-            value: <MLFLOW_TRACKING_URI>
+            value: ${MLFLOW_TRACKING_URI}
           - name: AZUREML_WORKSPACE_ID
-            value: <AZUREML_WORKSPACE_ID>
+            value: ${AZUREML_WORKSPACE_ID}

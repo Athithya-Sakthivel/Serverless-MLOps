@@ -1,11 +1,16 @@
-# ---------------------------------------------------------------------------
+# =============================================================================
 # CD – Training Job (staging only, no approvals)
 #
-# Triggered automatically when either the ELT CI or the ML-Training CI
-# pipeline succeeds on the `main` branch.
-# ---------------------------------------------------------------------------
+# Triggered automatically when **either** the ELT CI or the ML-Training CI
+# pipeline succeeds on `main`.  This ensures a single code change that touches
+# both domains only triggers one deployment.
+#
+# Stages:
+#   1. Build, vulnerability‑scan, and push the training container image.
+#   2. Deploy to staging using the full job YAML (preserves event trigger).
+# =============================================================================
 
-trigger: none
+trigger: none                              # triggered by CI completion, not commits
 
 resources:
   pipelines:
@@ -25,10 +30,15 @@ resources:
 pool:
   vmImage: ubuntu-24.04
 
+# The Terraform‑managed variable group `sm-all-vars` contains every non‑secret
+# configuration value (storage account, MLflow URI, queue names, etc.).
 variables:
   - group: sm-all-vars
 
 stages:
+  # --------------------------------------------------------------------------
+  # Stage 1 – Build, scan, and push the training image
+  # --------------------------------------------------------------------------
   - stage: build
     displayName: 'Build & Push Training Image'
     jobs:
@@ -49,6 +59,7 @@ stages:
               inlineScript: |
                 set -euo pipefail
 
+                # ---- 1. Assemble the full image reference ----
                 LOGIN_SERVER="$(az acr show --name "$CONTAINER_REGISTRY" --query loginServer -o tsv)"
                 IMAGE_TAG="training-${BUILD_SOURCE_VERSION}"
                 FULL_IMAGE="${LOGIN_SERVER}/training:${IMAGE_TAG}"
@@ -60,6 +71,7 @@ stages:
                   -t "${FULL_IMAGE}" \
                   src/workloads/training_pipeline
 
+                # ---- 2. Trivy vulnerability scan (block on CRITICAL) ----
                 echo "##[section]Scanning image with Trivy (CRITICAL)"
                 TRIVY_VERSION="0.72.0"
                 curl -fsSL --retry 3 --connect-timeout 10 \
@@ -73,14 +85,19 @@ stages:
                   --exit-code 1 \
                   "${FULL_IMAGE}"
 
+                # ---- 3. Push the clean image ----
                 echo "##[section]Pushing image: ${FULL_IMAGE}"
                 docker push "${FULL_IMAGE}"
 
+                # Pass the full image reference to the next stage
                 echo "##vso[task.setvariable variable=trainingImage;isOutput=true]${FULL_IMAGE}"
             env:
               CONTAINER_REGISTRY: $(containerRegistry)
               BUILD_SOURCE_VERSION: $(Build.SourceVersion)
 
+  # --------------------------------------------------------------------------
+  # Stage 2 – Deploy to staging (automatic, preserves event trigger)
+  # --------------------------------------------------------------------------
   - stage: staging
     displayName: 'Deploy to Staging'
     dependsOn: build
@@ -104,28 +121,34 @@ stages:
               inlineScript: |
                 set -euo pipefail
 
+                # Ensure the Container Apps CLI extension is installed
                 az extension add --name containerapp --upgrade --yes 2>/dev/null || true
 
-                JOB_NAME="$CONTAINER_APP_JOB_NAME_STAGING"
-                RESOURCE_GROUP="$STAGING_RG"
-                IMAGE="$TRAINING_IMAGE"
+                # ---- 1. Export every value the YAML template requires ----
+                export STORAGE_ACCOUNT_NAME="$AZURE_STORAGE_ACCOUNT_NAME"
+                export STORAGE_QUEUE_NAME="$STORAGE_QUEUE_NAME"
+                export MLFLOW_TRACKING_URI="$MLFLOW_TRACKING_URI"
+                export AZUREML_WORKSPACE_ID="$AZUREML_WORKSPACE_ID"
+                export TRAINING_IMAGE="$TRAINING_IMAGE"
 
-                echo "Updating training job: ${JOB_NAME} with image: ${IMAGE}"
-
-                # Prepare job YAML with the new image
+                # ---- 2. Generate a concrete YAML from the template ----
                 JOB_YAML="$(Agent.TempDirectory)/job.yaml"
-                cp src/workloads/training_pipeline/aca-job.yaml "$JOB_YAML"
-                sed -i "s|PLACEHOLDER|${IMAGE}|g" "$JOB_YAML"
+                envsubst < src/workloads/training_pipeline/aca-job.yaml > "$JOB_YAML"
 
-                # Update the job using the full YAML (preserves event trigger)
+                echo "##[section]Applying complete job definition..."
                 az containerapp job update \
-                  --name "$JOB_NAME" \
-                  --resource-group "$RESOURCE_GROUP" \
+                  --name "$CONTAINER_APP_JOB_NAME_STAGING" \
+                  --resource-group "$STAGING_RG" \
                   --yaml "$JOB_YAML" \
                   --output none
 
-                echo "Staging deployment complete. Event trigger preserved."
+                echo "Staging deployment complete. Event trigger and all env vars preserved."
             env:
+              # Pipeline variables mapped to the inline script environment
               CONTAINER_APP_JOB_NAME_STAGING: $(CONTAINER_APP_JOB_NAME)
               STAGING_RG: $(STAGING_RG)
               TRAINING_IMAGE: $(trainingImage)
+              AZURE_STORAGE_ACCOUNT_NAME: $(AZURE_STORAGE_ACCOUNT_NAME)
+              STORAGE_QUEUE_NAME: $(STORAGE_QUEUE_NAME)
+              MLFLOW_TRACKING_URI: $(MLFLOW_TRACKING_URI)
+              AZUREML_WORKSPACE_ID: $(AZUREML_WORKSPACE_ID)
