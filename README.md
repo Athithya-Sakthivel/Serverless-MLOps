@@ -124,9 +124,11 @@ Trigger the Terraform CD pipeline manually from the Azure DevOps UI. It provisio
 Assign RBAC roles for local development, then upload sample data to trigger the training pipeline.
 
 ```bash
+
 source .venv/bin/activate
 bash src/scripts/other_roles.sh
-export DEFAULT_BLOB_ROWS=1_000_000
+export HF_TOKEN=$HF_TOKEN # Optional huggingface token for faster download
+export MAX_DATASET_ROWS=1_000_000
 export ARTIFACTS_STORAGE_ACC_NAME="$(cd /workspace/src/terraform/main && tofu output -raw storage_account_name)"
 python3 src/scripts/simulate_data_upload.py
 ```

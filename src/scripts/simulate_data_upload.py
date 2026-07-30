@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Simulate data upload.
+Simulate data upload and maintain a balanced CI sample.
 
-Behavior:
-- Load a slice of a Hugging Face dataset.
-- Save a fixed 10,000-row local Parquet copy for CI tests.
-- Upload a configurable number of rows to Azure Blob Storage.
+- Load a slice of the Hugging Face ACS dataset and upload it to Azure Blob Storage.
+- The local CI sample (src/ci-samples/data.parquet) is **always** generated
+  from a synthetic balanced dataset, so CI tests never fail because of a
+  single-class label set.  The real-data upload path is unchanged.
 
 Environment variables:
   ARTIFACTS_STORAGE_ACC_NAME   Required. Azure storage account name.
@@ -13,8 +13,7 @@ Environment variables:
   RAW_BLOB_PREFIX              Optional. Default: monthly/
   HF_DATASET                   Optional. Default: birkhoffg/folktables-acs-income
   HF_SPLIT                     Optional. Default: train
-  ROWS                         Optional. Default: 9700000
-  PREVIEW_ROWS                 Optional. Default: 5
+  MAX_DATASET_ROWS             Optional. Default: 100_000  (min 1_000, max 1_000_000)
   HF_TOKEN                     Optional. Hugging Face token
 """
 
@@ -28,6 +27,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+import numpy as np
 import polars as pl
 from azure.core.exceptions import ClientAuthenticationError, HttpResponseError, ResourceExistsError
 from azure.identity import DefaultAzureCredential
@@ -41,22 +41,16 @@ DEFAULT_SPLIT = "train"
 DEFAULT_RAW_CONTAINER = "raw"
 DEFAULT_BLOB_PREFIX = "monthly/"
 
-
-LOCAL_SAMPLE_ROWS = int(os.getenv("LOCAL_SAMPLE_ROWS", 10_000))
-DEFAULT_BLOB_ROWS = int(os.getenv("DEFAULT_BLOB_ROWS", 1_000_000))
-DEFAULT_PREVIEW_ROWS = int(os.getenv("DEFAULT_PREVIEW_ROWS", 5))
-MAX_BLOB_ROWS = int(os.getenv("MAX_BLOB_ROWS", 100_000))
-
-
 STORAGE_ACCOUNT_RE = re.compile(r"^[a-z0-9]{3,24}$")
 PARQUET_CONTENT_TYPE = "application/vnd.apache.parquet"
 LOCAL_SAMPLE_PATH = Path("src/ci-samples/data.parquet")
 
 
+# ---------------------------------------------------------------------------
+# Helpers (must be defined before the constants that call them)
+# ---------------------------------------------------------------------------
 def configure_logging() -> None:
     logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
-
-    # Keep third-party noise down.
     for name in (
         "datasets",
         "huggingface_hub",
@@ -67,9 +61,40 @@ def configure_logging() -> None:
         "filelock",
     ):
         logging.getLogger(name).setLevel(logging.WARNING)
-
-    # Hide Hugging Face progress bars in CI.
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
+
+def parse_int_env(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
+    if value < minimum:
+        raise ValueError(f"{name} must be at least {minimum}, got {value}")
+    if value > maximum:
+        value = maximum
+    return value
+
+
+def normalize_blob_prefix(value: str) -> str:
+    prefix = (value or DEFAULT_BLOB_PREFIX).strip().lstrip("/")
+    if not prefix:
+        prefix = DEFAULT_BLOB_PREFIX
+    if not prefix.endswith("/"):
+        prefix += "/"
+    return prefix
+
+
+# ---------------------------------------------------------------------------
+# Fixed constants
+# ---------------------------------------------------------------------------
+_CI_SEED = 42
+_CI_ROWS = 2_000
+_PREVIEW_ROWS = 3
+_THRESHOLD = 50_000
+_STATES = ["NY", "CA", "TX", "FL", "IL", "PA", "OH", "GA", "NC", "MI"]
+_UPLOAD_ROWS = parse_int_env("MAX_DATASET_ROWS", 100_000, minimum=1_000, maximum=1_000_000)
 
 
 @dataclass(frozen=True)
@@ -79,8 +104,7 @@ class Config:
     blob_prefix: str = DEFAULT_BLOB_PREFIX
     dataset_name: str = DEFAULT_DATASET
     split: str = DEFAULT_SPLIT
-    blob_rows: int = DEFAULT_BLOB_ROWS
-    preview_rows: int = DEFAULT_PREVIEW_ROWS
+    upload_rows: int = _UPLOAD_ROWS
     hf_token: str | None = None
 
     @property
@@ -110,18 +134,7 @@ class Config:
         split = os.getenv("HF_SPLIT", DEFAULT_SPLIT).strip()
         hf_token = os.getenv("HF_TOKEN") or None
 
-        blob_rows = parse_int_env(
-            "ROWS",
-            DEFAULT_BLOB_ROWS,
-            minimum=1,
-            maximum=MAX_BLOB_ROWS,
-        )
-        preview_rows = parse_int_env(
-            "PREVIEW_ROWS",
-            DEFAULT_PREVIEW_ROWS,
-            minimum=1,
-            maximum=20,
-        )
+        upload_rows = parse_int_env("MAX_DATASET_ROWS", 100_000, minimum=1_000, maximum=1_000_000)
 
         return cls(
             storage_account_name=storage_account_name,
@@ -129,68 +142,73 @@ class Config:
             blob_prefix=blob_prefix,
             dataset_name=dataset_name,
             split=split,
-            blob_rows=blob_rows,
-            preview_rows=preview_rows,
+            upload_rows=upload_rows,
             hf_token=hf_token,
         )
 
 
-def normalize_blob_prefix(value: str) -> str:
-    prefix = (value or DEFAULT_BLOB_PREFIX).strip().lstrip("/")
-    if not prefix:
-        prefix = DEFAULT_BLOB_PREFIX
-    if not prefix.endswith("/"):
-        prefix += "/"
-    return prefix
+def _build_synthetic_frame(n_rows: int, seed: int) -> pl.DataFrame:
+    """Return a balanced synthetic DataFrame with the ACS schema."""
+    rng = np.random.default_rng(seed)
+    half = n_rows // 2
 
+    agep = rng.integers(18, 80, n_rows).astype(float)
+    cow = rng.integers(1, 8, n_rows).astype(float)
+    schl = rng.integers(1, 24, n_rows).astype(float)
+    mar = rng.integers(1, 5, n_rows).astype(float)
+    occp = rng.integers(100, 5000, n_rows).astype(float)
+    pobp = rng.integers(1, 100, n_rows).astype(float)
+    relp = rng.integers(0, 10, n_rows).astype(float)
+    wkhp = rng.integers(0, 60, n_rows).astype(float)
+    sex = rng.integers(1, 2, n_rows).astype(float)
+    rac1p = rng.integers(1, 9, n_rows).astype(float)
+    year = rng.integers(2019, 2025, n_rows).astype(float)
+    state = rng.choice(_STATES, n_rows)
 
-def parse_int_env(name: str, default: int, *, minimum: int, maximum: int) -> int:
-    raw = os.getenv(name, str(default)).strip()
-    try:
-        value = int(raw)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
+    income = np.empty(n_rows, dtype=float)
+    income[:half] = rng.integers(1_000, _THRESHOLD - 1, half).astype(float)
+    income[half:] = rng.integers(_THRESHOLD, _THRESHOLD + 100_000, n_rows - half).astype(float)
+    rng.shuffle(income)
 
-    if value < minimum:
-        raise ValueError(f"{name} must be at least {minimum}, got {value}")
-    if value > maximum:
-        value = maximum
-    return value
+    return pl.DataFrame(
+        {
+            "AGEP": agep,
+            "COW": cow,
+            "SCHL": schl,
+            "MAR": mar,
+            "OCCP": occp,
+            "POBP": pobp,
+            "RELP": relp,
+            "WKHP": wkhp,
+            "SEX": sex,
+            "RAC1P": rac1p,
+            "STATE": state,
+            "YEAR": year,
+            "PINCP": income,
+        }
+    )
 
 
 def load_dataset_frame(cfg: Config) -> pl.DataFrame:
-    """
-    Load enough rows for both outputs:
-    - local sample: fixed 10,000 rows
-    - blob upload: configurable ROWS, default 9.7M
-    """
-    load_rows = max(LOCAL_SAMPLE_ROWS, cfg.blob_rows)
+    load_rows = max(_CI_ROWS, cfg.upload_rows)
     split_spec = f"{cfg.split}[:{load_rows}]"
 
     logging.info("Loading dataset=%r split=%r", cfg.dataset_name, split_spec)
-    dataset = load_dataset(
-        cfg.dataset_name,
-        split=split_spec,
-        token=cfg.hf_token,
-    )
+    dataset = load_dataset(cfg.dataset_name, split=split_spec, token=cfg.hf_token)
 
     df = dataset_to_polars(dataset)
     if df.height == 0:
         raise ValueError("Loaded dataset slice is empty.")
 
     logging.info("Loaded frame   : %d rows x %d columns", df.height, df.width)
-    print_schema(df)
 
-    preview_count = min(cfg.preview_rows, df.height)
+    preview_count = min(_PREVIEW_ROWS, df.height)
     logging.info("Preview (%d rows):\n%s", preview_count, df.head(preview_count))
 
     return df
 
 
 def dataset_to_polars(dataset) -> pl.DataFrame:
-    """
-    Convert a Hugging Face Dataset to Polars with a safe fallback.
-    """
     try:
         formatted = dataset.with_format("polars")[:]
         if isinstance(formatted, pl.DataFrame):
@@ -209,30 +227,25 @@ def dataset_to_polars(dataset) -> pl.DataFrame:
     raise TypeError(f"Unsupported dataset conversion result: {type(raw)!r}")
 
 
-def print_schema(df: pl.DataFrame) -> None:
-    logging.info("Schema:")
-    for column_name, dtype in df.schema.items():
-        logging.info("  %-20s %s", column_name, dtype)
-
-
-def save_local_sample(df: pl.DataFrame) -> None:
-    local_sample = df.head(min(LOCAL_SAMPLE_ROWS, df.height))
+# ---------------------------------------------------------------------------
+# Local CI sample – always synthetic and balanced
+# ---------------------------------------------------------------------------
+def save_local_sample(_df: pl.DataFrame | None = None) -> None:
+    frame = _build_synthetic_frame(_CI_ROWS, _CI_SEED)
     LOCAL_SAMPLE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    local_sample.write_parquet(LOCAL_SAMPLE_PATH, compression="zstd")
-    logging.info("Saved local sample: %s (%d rows)", LOCAL_SAMPLE_PATH, local_sample.height)
+    frame.write_parquet(LOCAL_SAMPLE_PATH, compression="zstd")
+    logging.info("Saved CI sample: %s (%d rows)", LOCAL_SAMPLE_PATH, frame.height)
 
 
+# ---------------------------------------------------------------------------
+# Azure Blob Storage helpers
+# ---------------------------------------------------------------------------
 def get_blob_service(cfg: Config) -> BlobServiceClient:
-    # DefaultAzureCredential is the normal chained credential for local CLI + Azure runtime use.
     credential = DefaultAzureCredential(exclude_interactive_browser_credential=True)
     return BlobServiceClient(account_url=cfg.account_url, credential=credential)
 
 
 def ensure_container(container_client) -> None:
-    """
-    Idempotent container creation.
-    Avoids pre-checks that generate noisy 404 logs.
-    """
     try:
         container_client.create_container()
         logging.info("Created container: %s", container_client.container_name)
@@ -241,7 +254,7 @@ def ensure_container(container_client) -> None:
 
 
 def upload_blob_data(df: pl.DataFrame, cfg: Config) -> None:
-    upload_frame = df.head(min(cfg.blob_rows, df.height))
+    upload_frame = df.head(min(cfg.upload_rows, df.height))
     blob_name = f"{cfg.blob_prefix}batch_{datetime.now(UTC):%Y%m%d_%H%M%S}.parquet"
 
     buffer = io.BytesIO()
@@ -266,7 +279,6 @@ def upload_blob_data(df: pl.DataFrame, cfg: Config) -> None:
     except HttpResponseError as exc:
         error_code = str(getattr(exc, "error_code", "") or "")
         error_message = str(exc)
-
         if (
             "AuthorizationPermissionMismatch" in error_code
             or "AuthorizationPermissionMismatch" in error_message
@@ -275,7 +287,6 @@ def upload_blob_data(df: pl.DataFrame, cfg: Config) -> None:
                 "Upload was authenticated but not authorized. "
                 "Assign Storage Blob Data Contributor on the storage account scope."
             ) from exc
-
         raise
 
     logging.info("Uploaded %d rows to %s/%s", upload_frame.height, cfg.container_name, blob_name)
@@ -283,18 +294,19 @@ def upload_blob_data(df: pl.DataFrame, cfg: Config) -> None:
 
 def main() -> int:
     configure_logging()
-
     cfg = Config.from_env()
 
     logging.info("Storage account: %s", cfg.storage_account_name)
     logging.info("Account URL    : %s", cfg.account_url)
     logging.info("Container      : %s", cfg.container_name)
     logging.info("Blob prefix    : %s", cfg.blob_prefix)
-    logging.info("Blob rows      : %d", cfg.blob_rows)
-    logging.info("Local rows     : %d", LOCAL_SAMPLE_ROWS)
+    logging.info("Upload rows    : %d", cfg.upload_rows)
 
+    # 1. Refresh CI sample (always synthetic)
+    save_local_sample()
+
+    # 2. Load real data and upload
     df = load_dataset_frame(cfg)
-    save_local_sample(df)
     upload_blob_data(df, cfg)
 
     logging.info("Done.")

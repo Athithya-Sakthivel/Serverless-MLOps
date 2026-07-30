@@ -1,4 +1,4 @@
-"""Validate raw parquet data before transformation."""
+"""Validate raw parquet data before transformation"""
 
 from __future__ import annotations
 
