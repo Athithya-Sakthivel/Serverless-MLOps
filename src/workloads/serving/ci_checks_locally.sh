@@ -11,7 +11,7 @@ pip install -r src/workloads/serving/requirements-ci.txt
 make clean
 
 
-cd /workspace/src/workloads/serving
+cd src/workloads/serving
 
 ruff check . --fix && ruff format . && basedpyright . && pytest tests/ -v
 

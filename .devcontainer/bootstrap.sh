@@ -251,6 +251,11 @@ print_versions() {
     echo "  Pre-commit : $(pre-commit --version)"
 }
 
+rm -rf .venv
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r src/scripts/requirements.txt
+
+
 main() {
     install_base_packages
     install_azure_cli

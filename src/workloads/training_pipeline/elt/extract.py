@@ -1,4 +1,4 @@
-"""Extract raw parquet from Azure Blob Storage."""
+"""Extract raw parquet from Azure Blob Storage"""
 
 from __future__ import annotations
 
