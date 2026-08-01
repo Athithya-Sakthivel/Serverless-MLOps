@@ -1,3 +1,10 @@
+# ==============================================================================
+# Root variables.tf
+#
+# Variables for the serving app and training job are intentionally absent.
+# Both are created by run.sh via Azure CLI after the ACA environment is warm.
+# ==============================================================================
+
 variable "subscription_id" {
   description = "Azure subscription ID."
   type        = string
@@ -44,22 +51,6 @@ variable "shared_access_key_enabled" {
 variable "alert_email_address" {
   description = "Email address used by the monitoring action group."
   type        = string
-}
-
-variable "aca_training_image" {
-  description = "Container image for the training job."
-  type        = string
-}
-
-variable "aca_serving_image" {
-  description = "Container image for the serving app."
-  type        = string
-}
-
-variable "aca_serve_port" {
-  description = "Ingress port for the serving app."
-  type        = number
-  default     = 80
 }
 
 # ─── Azure DevOps module inputs (auto‑exported by run.sh) ───────────────
@@ -131,55 +122,4 @@ variable "enable_validation_failures_alert" {
 variable "ado_client_id" {
   description = "Azure DevOps CI service principal client ID (for remote state access)."
   type        = string
-}
-
-
-# ─── ACA training job resources (overridable per environment) ──────────
-variable "train_cpu" {
-  description = "CPU for the training job."
-  type        = number
-  default     = 2.0
-}
-
-variable "train_memory" {
-  description = "Memory for the training job."
-  type        = string
-  default     = "4Gi"
-}
-
-variable "train_replica_timeout_seconds" {
-  description = "Maximum runtime per training job execution."
-  type        = number
-  default     = 1800
-}
-
-variable "train_replica_retry_limit" {
-  description = "Retry count for failed training executions."
-  type        = number
-  default     = 1
-}
-
-# ─── ACA serving app resources (overridable per environment) ───────────
-variable "serve_cpu" {
-  description = "CPU for the serving app."
-  type        = number
-  default     = 0.5
-}
-
-variable "serve_memory" {
-  description = "Memory for the serving app."
-  type        = string
-  default     = "1Gi"
-}
-
-variable "serve_min_replicas" {
-  description = "Minimum replicas for the serving app."
-  type        = number
-  default     = 0
-}
-
-variable "serve_max_replicas" {
-  description = "Maximum replicas for the serving app."
-  type        = number
-  default     = 10
 }

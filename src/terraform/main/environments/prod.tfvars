@@ -16,15 +16,11 @@ aca_training_image = "busybox:1.36.1@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8
 aca_serving_image  = "mcr.microsoft.com/azuredocs/containerapps-helloworld@sha256:e9b3e7c34664c7cffd7144864b0e4eec369bfde80068f9095dc63b37058bec48"
 aca_serve_port     = 80
 
-train_cpu                     = 2.0
-train_memory                  = "4Gi"
-train_replica_timeout_seconds = 1800
-train_replica_retry_limit     = 1
 
 serve_cpu          = 0.5
 serve_memory       = "1Gi"
 serve_min_replicas = 0
-serve_max_replicas = 10
+serve_max_replicas = 6
 
 enable_request_failures_alert    = true
 enable_slow_requests_alert       = true

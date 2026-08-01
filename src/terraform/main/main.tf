@@ -81,8 +81,7 @@ module "function" {
   subscription_id             = var.subscription_id
   aca_resource_group_name     = module.state.resource_group_name
   aca_job_name                = local.aca_train_job_name
-  aca_job_id                  = module.aca.train_job_id
-  aca_job_api_version         = "2026-01-01"
+  aca_job_id                  = "/subscriptions/${var.subscription_id}/resourceGroups/${module.state.resource_group_name}/providers/Microsoft.App/jobs/${local.aca_train_job_name}"
   aca_request_timeout_seconds = 30
 
   source_storage_account_id            = module.state.storage_account_id
@@ -91,10 +90,16 @@ module "function" {
 
   application_insights_connection_string = module.observability.application_insights_connection_string
 }
+# ==============================================================================
+# Root main.tf – module "aca" block
+#
+# Only the ACA environment is wired here.  The serving app and training job
+# are created later by run.sh after the environment is fully provisioned.
+# This avoids the ARM "Operation expired" timeout that occurs when Terraform
+# creates both the environment and the Container Apps in a single plan on
+# student subscriptions.
+# ==============================================================================
 
-# ---------------------------------------------------------------------------
-# ACA – serving app and training job (manual trigger)
-# ---------------------------------------------------------------------------
 module "aca" {
   source = "./modules/aca"
 
@@ -102,33 +107,6 @@ module "aca" {
   location                   = var.location
   environment_name           = local.aca_environment_name
   log_analytics_workspace_id = module.observability.log_analytics_workspace_id
-
-  training_image = var.aca_training_image
-  serving_image  = var.aca_serving_image
-  train_job_name = local.aca_train_job_name
-  serve_app_name = local.aca_serve_app_name
-
-  storage_account_id   = module.state.storage_account_id
-  storage_account_name = module.state.storage_account_name
-
-  acr_id           = module.state.acr_id
-  acr_login_server = module.state.acr_login_server
-
-  ml_workspace_id     = module.ml_workspace.workspace_id
-  mlflow_tracking_uri = module.ml_workspace.mlflow_tracking_uri
-
-  serve_port                     = var.aca_serve_port
-  app_insights_connection_string = module.observability.application_insights_connection_string
-
-  train_cpu                     = var.train_cpu
-  train_memory                  = var.train_memory
-  train_replica_timeout_seconds = var.train_replica_timeout_seconds
-  train_replica_retry_limit     = var.train_replica_retry_limit
-
-  serve_cpu          = var.serve_cpu
-  serve_memory       = var.serve_memory
-  serve_min_replicas = var.serve_min_replicas
-  serve_max_replicas = var.serve_max_replicas
 
   tags = local.common_tags
 }
