@@ -16,7 +16,8 @@ set -euo pipefail
 #   - `az login` with Storage Blob Data Contributor role on the storage account
 #   - Python virtual env with dependencies (see requirements-ci.txt)
 #   - Terraform/OpenTofu initialised in src/terraform/main
-#
+#   - bash src/scripts/other_roles.sh && bash src/workloads/training_pipeline/ci_checks_locally.sh
+# 
 # Environment variables (all optional, with sensible defaults):
 #   TRAINING_TARGET_INCOME_THRESHOLD   – income threshold for binary target (default: 50000)
 #   TRAIN_RANDOM_SEED                  – random seed (default: 42)
@@ -30,6 +31,9 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 PIPELINE_DIR="$REPO_ROOT/src/workloads/training_pipeline"
 TF_DIR="$REPO_ROOT/src/terraform/main"
 CI_SAMPLE="$REPO_ROOT/src/ci-samples/data.parquet"
+
+unset AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_CLIENT_SECRET AZURE_SUBSCRIPTION_ID
+
 
 FORCE=false
 NEW_RUN=false
@@ -96,14 +100,7 @@ fi
 export INPUT_BLOB_NAME
 
 # ── 3. Activate virtual environment ───────────────────────────────────
-if [ -f "$REPO_ROOT/.venv/bin/activate" ]; then
-    source "$REPO_ROOT/.venv/bin/activate"
-elif [ -f "$REPO_ROOT/.venv1/bin/activate" ]; then
-    source "$REPO_ROOT/.venv1/bin/activate"
-else
-    echo "No virtual environment found" >&2
-    exit 1
-fi
+source .venv_train/bin/activate
 
 # Ensure azureml-mlflow plugin is present (idempotent)
 pip install -q azureml-mlflow 2>/dev/null || true

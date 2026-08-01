@@ -100,3 +100,9 @@ variable "prod_resource_group" {
   description = "Production resource group name."
   type        = string
 }
+
+
+variable "key_vault_name" {
+  description = "Name of the central Key Vault (used by pipelines to fetch secrets)."
+  type        = string
+}

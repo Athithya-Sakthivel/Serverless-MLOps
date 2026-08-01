@@ -19,13 +19,6 @@ resource "azurerm_role_assignment" "train_blob_contributor" {
   skip_service_principal_aad_check = true
 }
 
-resource "azurerm_role_assignment" "train_queue_contributor" {
-  scope                            = var.storage_account_id
-  role_definition_name             = "Storage Queue Data Contributor"
-  principal_id                     = azurerm_container_app_job.train.identity[0].principal_id
-  skip_service_principal_aad_check = true
-}
-
 resource "azurerm_role_assignment" "train_ml_workspace" {
   scope                            = var.ml_workspace_id
   role_definition_name             = "AzureML Data Scientist"

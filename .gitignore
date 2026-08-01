@@ -238,3 +238,4 @@ data
 .venv1
 .venv_train
 .venv_serve
+src/workloads/serving/.tf_serving_outputs

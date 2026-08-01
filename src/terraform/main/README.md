@@ -1,4 +1,4 @@
-# Main Infrastructure (src/terraform/main)
+# Main Infrastructure (`src/terraform/main`)
 
 OpenTofu configuration for a serverless MLOps platform on Azure. Every resource name is derived from the subscription ID and environment — no hardcoded values.
 
@@ -6,8 +6,8 @@ OpenTofu configuration for a serverless MLOps platform on Azure. Every resource 
 
 ```
 Blob upload (raw/monthly/*.parquet)
-  → Event Grid System Topic (filtered)
-    → Storage Queue
+  → Azure Function blob trigger
+    → REST API call to start ACA training job
       → Container App Job (train)
         → ELT + Train + Register
           → MLflow → Azure ML Workspace (registry)
@@ -15,7 +15,7 @@ Blob upload (raw/monthly/*.parquet)
 Serving endpoint (public, Entra ID auth)
   → Container App (serve)
     → Model loaded from MLflow registry
-    → Inference endpoint (/predict, /health, /ready, /metrics, /version)
+    → Inference endpoints (/predict, /health, /ready, /metrics, /version)
 
 CI/CD
   GitHub push → Azure Pipeline
@@ -40,7 +40,7 @@ Pinned to exact versions in `versions.tf`. Three `versions.tf` files exist acros
 | `azapi` | `azure/azapi` | 2.10.0 | Root, `aca` |
 | `azuredevops` | `microsoft/azuredevops` | 1.15.1 | Root, `azure_devops` |
 
-Root `versions.tf` declares all four providers and the `azurerm` backend. `modules/aca/versions.tf` declares `azurerm`, `azuread`, `azapi`. `modules/azure_devops/versions.tf` declares `azurerm` and `azuredevops`. Other modules (`state`, `eventing`, `observability`, `ml_workspace`) inherit `azurerm` from the root and need no separate declaration.
+Root `versions.tf` declares all four providers and the `azurerm` backend. `modules/aca/versions.tf` declares `azurerm`, `azuread`, `azapi`. `modules/azure_devops/versions.tf` declares `azurerm` and `azuredevops`. Other modules (`state`, `function`, `observability`, `ml_workspace`) inherit `azurerm` from the root and need no separate declaration.
 
 ## Module inventory
 
@@ -49,9 +49,9 @@ Root `versions.tf` declares all four providers and the `azurerm` backend. `modul
 | `state` | Resource group, ADLS Gen2 (HNS enabled, 4 containers), Azure Container Registry (Basic, admin disabled) |
 | `observability` | Log Analytics workspace (30 days), Application Insights (workspace-based), Workbook (8 KQL panels), Action Group (email), 4 alert rules with per-rule enable/disable toggles |
 | `ml_workspace` | Azure ML workspace (no compute), dedicated storage account (HNS disabled — AML requirement), Key Vault (RBAC, purge protection in prod), RBAC assignments |
-| `aca` | Container Apps Environment (Consumption), serving app (public, Entra ID auth via azapi, multiple revisions), training job (event-driven, queue-scaled), SAMI + RBAC |
-| `eventing` | Storage queue, Event Grid system topic, user-assigned managed identity |
-| `azure_devops` | ELT CI pipeline (`<repo>-elt-ci`), training CD pipeline (`<repo>-train-cd`), serving CD pipeline (`<repo>-serve-cd`), `elt-ci-vars` variable group (storage account, MLflow URI, container names — populated from remote state), `train-cd-vars` and `serve-cd-vars` variable groups (ACR login server, Container App/Job names) |
+| `function` | Flex Consumption Function App with Python runtime, system-assigned managed identity, blob trigger on `raw/monthly/{name}`, RBAC to read source storage and start the ACA training job |
+| `aca` | Container Apps Environment (Consumption), serving app (public, Entra ID auth via azapi, multiple revisions), training job (manual trigger, started by the Function), SAMI + RBAC |
+| `azure_devops` | ELT CI pipeline, ML training CI pipeline, serving CI pipeline, training CD pipeline, serving CD pipeline, single variable group `sm-all-vars` (all non‑secret configuration) |
 
 ## Serving app contract
 
@@ -61,14 +61,25 @@ The app emits custom metrics (`prediction_latency_ms`, `prediction_count`, `vali
 
 The training Container App Job:
 
-- Reads the blob event from the queue message
-- Runs ELT (extract from raw, transform, load to clean)
-- Trains a model using the clean data
-- Logs metrics and parameters to MLflow
-- Registers the model in Azure ML registry
-- Exits after completion (scale to zero)
+- Is a **manual trigger** job (no event source).
+- Is started by the Azure Function via the ARM `POST /jobs/{jobName}/start` API.
+- Runs ELT (extract from raw, transform, load to clean).
+- Trains a model using the clean data.
+- Logs metrics and parameters to MLflow.
+- Registers the model in Azure ML registry.
+- Exits after completion.
 
 CPU: 2, Memory: 4Gi, Timeout: 30min, Retries: 1.
+
+## Azure Function (blob trigger)
+
+The Function (`func-blob-trigger-{env}`) replaces the previous Event Grid + Storage Queue chain. Key details:
+
+- **Plan**: Flex Consumption (scales to zero).
+- **Identity**: System‑assigned, granted `Storage Blob Data Owner` and `Storage Queue Data Contributor` on the source data lake, and `Container Apps Jobs Operator` on the training job.
+- **Trigger**: Blob trigger on `raw/monthly/{name}` using identity‑based connection (`__blobServiceUri` + `__credential=managedidentity`).
+- **Action**: Starts the training job by calling `POST /subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.App/jobs/{job}/start?api-version=2026-01-01` with a managed identity token.
+- **Environment variables**: `ACA_SUBSCRIPTION_ID`, `ACA_RESOURCE_GROUP_NAME`, `ACA_JOB_NAME`, `ACA_JOB_API_VERSION`, `ACA_REQUEST_TIMEOUT_SECONDS`, and the source storage connection settings.
 
 ## Two storage accounts
 
@@ -111,17 +122,13 @@ Four scheduled query rules, each independently toggled via `enable_*_alert` in t
 | `app_exceptions` | `AppExceptions` | Any exception in 15min | Warning |
 | `app_validation_failures` | `AppMetrics` | `validation_failures` > 0 in 15min | Info |
 
-## Event Grid outside Terraform
-
-`azurerm_eventgrid_system_topic_event_subscription` returns `Internal error` on student subscriptions across all India regions. `run.sh` creates it via Azure CLI after apply, deriving names from the same `locals.tf` logic.
-
 ## Entra ID auth on serving endpoint
 
-App registration + service principal created via `azuread` provider. Auth config bound to Container App via `azapi_resource` (azurerm lacks native support). First apply uses localhost redirect URI; second apply updates it to the real FQDN. Unauthenticated requests receive HTTP 401.
+App registration + service principal created via `azuread` provider. Auth config bound to Container App via `azapi_resource` (azurerm lacks native support). Redirect URI is derived from the Container Apps environment’s default domain for a deterministic configuration. Unauthenticated requests receive HTTP 401.
 
 ## Naming convention
 
-All names derived in `locals.tf`: `<project-abbr><resource-type><env-abbr><subscription-suffix>`. Example staging names: `smstgartifactsf41930`, `law-sm-stg`, `acae-sm-stg`, `aca-serve-stg`, `acaj-train-stg`. Subscription suffix ensures global uniqueness per engineer.
+All names derived in `locals.tf`: `<project-abbr><resource-type><env-abbr><subscription-suffix>`. Example staging names: `smstgartifactsf41930`, `law-sm-stg`, `acae-sm-stg`, `aca-serve-stg`, `acaj-train-stg`, `func-blob-trigger-stg`. Subscription suffix ensures global uniqueness per engineer.
 
 ## Identity model
 
@@ -129,24 +136,24 @@ System-assigned managed identities everywhere. No storage keys, no SAS tokens, n
 
 ## Azure DevOps integration
 
-The `azure_devops` module creates pipelines and variable groups in the project provisioned by bootstrap. Variable groups read Terraform outputs from remote state — no manual value management. CI pipelines trigger on path-specific code changes. CD pipelines deploy on CI success with manual approval for infrastructure changes.
+The `azure_devops` module creates pipelines and a single variable group (`sm-all-vars`) in the project provisioned by bootstrap. The variable group contains every non‑secret configuration value (storage account, MLflow URI, container names, ACR name, resource groups, etc.) and is fully populated from Terraform outputs — no manual value management. CI pipelines trigger on path-specific code changes. CD pipelines deploy on CI success with manual approval for infrastructure changes.
 
 ## run.sh
 
-Single entrypoint for plan, create, validate, destroy. Auto-derives subscription/tenant from `az account show`. Handles OIDC, CLI, and access_key backend auth. Refreshes token before apply. Nuclear destroy purges soft-deleted Key Vault and ML workspace, deletes state blob.
+Single entrypoint for plan, create, validate, destroy. Auto-derives subscription/tenant from `az account show`. Handles OIDC, CLI, and access_key backend auth. Refreshes token before apply. Nuclear destroy purges soft-deleted Key Vault and ML workspace, deletes state blob. No longer manages Event Grid subscriptions.
 
 | Command | Effect |
 |---------|--------|
 | `--plan --env <env>` | Validate, format, create plan file |
-| `--create --env <env>` | Plan, apply, wire Event Grid, sync variable groups |
-| `--destroy --env <env> --yes-delete` | Delete Event Grid subscription, nuke resource group, purge soft-deleted resources, delete state blob |
+| `--create --env <env>` | Plan, apply, sync variable groups |
+| `--destroy --env <env> --yes-delete` | Nuke resource group, purge soft-deleted resources, delete state blob |
 | `--validate --env <env>` | Format and validate only |
 
 ## Key design choices
 
-- **Serverless compute**: Container Apps scale to zero. No VMs, no AKS management.
+- **Serverless compute**: Container Apps and Azure Functions scale to zero. No VMs, no AKS management.
+- **Reliable trigger**: Blob‑triggered Azure Function replaces fragile Event Grid + Storage Queue chain; works on all subscription tiers.
 - **Two storage accounts**: AML requires non-HNS; data lake requires HNS.
-- **Event Grid via CLI**: Bypasses recurring provider bug on student subscriptions.
 - **Alert toggles**: Per-rule booleans in tfvars let you control quota consumption.
 - **No secrets**: SAMI + RBAC + OIDC. Zero hardcoded credentials.
 - **Derived names**: One `locals.tf` block generates every resource name from subscription ID and environment.

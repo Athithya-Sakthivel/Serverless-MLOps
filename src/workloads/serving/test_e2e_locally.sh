@@ -9,10 +9,11 @@
 # Usage:
 #   bash src/workloads/serving/test_e2e_locally.sh
 #
-# Requirements:
+# Prerequesities:
 #   - `az login` with read access to the ML workspace (for Terraform outputs)
 #   - Python virtual env with serving dependencies installed
 #   - A model registered under MODEL_NAME / MODEL_ALIAS (default: production)
+#  
 # =============================================================================
 
 set -euo pipefail
@@ -64,26 +65,23 @@ fi
 # ---------------------------------------------------------------------------
 # 2. Environment – identical to the ACA container EXCEPT telemetry is off
 # ---------------------------------------------------------------------------
-export MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI}"
-export APPLICATIONINSIGHTS_CONNECTION_STRING=""   # disable telemetry for local tests
+export MLFLOW_TRACKING_URI="$(cd src/terraform/main && source .bootstrap.generated.env 2>/dev/null; tofu output -raw mlflow_tracking_uri)"
+export APPLICATIONINSIGHTS_CONNECTION_STRING="$(cd src/terraform/main && source .bootstrap.generated.env 2>/dev/null; tofu output -raw application_insights_connection_string)"
 export MODEL_NAME="${MODEL_NAME:-acs_income_classifier}"
 export MODEL_ALIAS="${MODEL_ALIAS:-production}"
 export MODEL_VERSION="${MODEL_VERSION:-}"          # empty = use alias
 export SERVICE_NAME="serving-api-e2e-local"
 export SERVICE_VERSION="1.0.0"
 export ENVIRONMENT="local-e2e"
+export SERVING_SKIP_MODEL_LOAD="0"
 
 # ---------------------------------------------------------------------------
 # 3. Virtual environment
 # ---------------------------------------------------------------------------
-if [ -f "${REPO_ROOT}/.venv/bin/activate" ]; then
-    source "${REPO_ROOT}/.venv/bin/activate"
-elif [ -f "${REPO_ROOT}/.venv1/bin/activate" ]; then
-    source "${REPO_ROOT}/.venv1/bin/activate"
-else
-    echo "No virtual environment found at .venv or .venv1" >&2
-    exit 1
-fi
+# ── 3. Virtual environment ───────────────────────────────────
+# If a virtualenv is already active (VIRTUAL_ENV is set), use it.
+# Otherwise try the known venv directories.
+source .venv_se/bin/activate
 
 # ---------------------------------------------------------------------------
 # 4. Model availability & input shape discovery
@@ -184,8 +182,9 @@ echo "Health check passed."
 # 7. Test /ready
 # ---------------------------------------------------------------------------
 echo "Testing /ready …"
-READY_RESP=$(curl -fsS "http://localhost:${TEST_PORT}/ready")
-echo "${READY_RESP}" | python3 -m json.tool 2>/dev/null || echo "${READY_RESP}"
+READY_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${TEST_PORT}/ready")
+READY_BODY=$(curl -s "http://localhost:${TEST_PORT}/ready")
+echo "HTTP ${READY_CODE}: ${READY_BODY}"
 
 if echo "${READY_RESP}" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('model_loaded') else 1)" 2>/dev/null; then
     echo "Model is loaded and ready."

@@ -120,16 +120,16 @@ output "aca_serve_app_latest_revision_name" {
   value = module.aca.serve_app_latest_revision_name
 }
 
-output "event_grid_system_topic_name" {
-  value = module.eventing.system_topic_name
+output "function_app_name" {
+  value = module.function.function_app_name
 }
 
-output "event_grid_system_topic_id" {
-  value = module.eventing.system_topic_id
+output "function_app_id" {
+  value = module.function.function_app_id
 }
 
-output "aca_storage_queue_name" {
-  value = module.eventing.storage_queue_name
+output "function_app_default_hostname" {
+  value = module.function.function_app_default_hostname
 }
 
 output "elt_ci_pipeline_id" {

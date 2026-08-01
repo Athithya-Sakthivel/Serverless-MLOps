@@ -46,7 +46,6 @@ variable "alert_email_address" {
   type        = string
 }
 
-# ACA images and port – not derived, differ per environment
 variable "aca_training_image" {
   description = "Container image for the training job."
   type        = string
@@ -62,20 +61,6 @@ variable "aca_serve_port" {
   type        = number
   default     = 80
 }
-
-# Event Grid raw data filter – may vary per environment
-variable "event_raw_container_name" {
-  description = "Blob container monitored for uploads."
-  type        = string
-  default     = "raw"
-}
-
-variable "event_raw_blob_prefix" {
-  description = "Blob prefix inside the monitored container."
-  type        = string
-  default     = "monthly/"
-}
-
 
 # ─── Azure DevOps module inputs (auto‑exported by run.sh) ───────────────
 
@@ -146,4 +131,55 @@ variable "enable_validation_failures_alert" {
 variable "ado_client_id" {
   description = "Azure DevOps CI service principal client ID (for remote state access)."
   type        = string
+}
+
+
+# ─── ACA training job resources (overridable per environment) ──────────
+variable "train_cpu" {
+  description = "CPU for the training job."
+  type        = number
+  default     = 2.0
+}
+
+variable "train_memory" {
+  description = "Memory for the training job."
+  type        = string
+  default     = "4Gi"
+}
+
+variable "train_replica_timeout_seconds" {
+  description = "Maximum runtime per training job execution."
+  type        = number
+  default     = 1800
+}
+
+variable "train_replica_retry_limit" {
+  description = "Retry count for failed training executions."
+  type        = number
+  default     = 1
+}
+
+# ─── ACA serving app resources (overridable per environment) ───────────
+variable "serve_cpu" {
+  description = "CPU for the serving app."
+  type        = number
+  default     = 0.5
+}
+
+variable "serve_memory" {
+  description = "Memory for the serving app."
+  type        = string
+  default     = "1Gi"
+}
+
+variable "serve_min_replicas" {
+  description = "Minimum replicas for the serving app."
+  type        = number
+  default     = 0
+}
+
+variable "serve_max_replicas" {
+  description = "Maximum replicas for the serving app."
+  type        = number
+  default     = 10
 }

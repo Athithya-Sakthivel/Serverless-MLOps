@@ -37,6 +37,12 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd -P)"
 BOOTSTRAP_ENV_FILE="$REPO_ROOT/src/terraform/main/.bootstrap.generated.env"
 TRIGGER_FILE="$REPO_ROOT/src/terraform/main/.trigger/azure-devops-bootstrap.txt"
 
+az role assignment create \
+  --assignee $(az ad signed-in-user show --query id -o tsv) \
+  --role "Key Vault Secrets User" \
+  --scope "/subscriptions/b1e221f4-74ef-4e62-9bca-fb70aef41930/resourceGroups/rg-sm-state-f41930/providers/Microsoft.KeyVault/vaults/kv-azdo-bootstrap-f41930"
+
+  
 log() { printf '[%s] %s\n' "$(date +'%H:%M:%S')" "$*"; }
 fail() { log "ERROR: $*" >&2; exit 1; }
 require_cmd() { command -v "$1" >/dev/null 2>&1 || fail "$1 missing"; }

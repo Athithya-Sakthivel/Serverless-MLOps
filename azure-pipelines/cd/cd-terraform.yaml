@@ -1,11 +1,15 @@
-# ---------------------------------------------------------------------------
+# =============================================================================
 # CD – Terraform Apply (manual trigger)
 #
-# Uses the terraform-vars variable group for credentials.
-# Run manually from the Azure DevOps UI.
-# ---------------------------------------------------------------------------
+# Two‑phase deployment to avoid student‑subscription timeouts:
+#   Phase 1 provisions everything except Container Apps so the ACA environment
+#           is created and warm.
+#   Phase 2 deploys the training job and serving app into the warm environment,
+#           heals the job if it failed to provision, then deploys the Azure
+#           Function blob trigger.
+# =============================================================================
 
-trigger: none
+trigger: none                # Manual only – triggered from the Azure DevOps UI
 
 resources:
   pipelines:
@@ -17,13 +21,14 @@ resources:
 pool:
   vmImage: ubuntu-24.04
 
+# Non‑secret configuration and the Azure DevOps PAT are in terraform‑vars
 variables:
   - group: terraform-vars
 
 jobs:
   - deployment: apply_terraform
     displayName: 'Apply Terraform – Staging'
-    environment: staging
+    environment: staging         # Requires manual approval defined in Azure DevOps
     strategy:
       runOnce:
         deploy:
@@ -32,6 +37,13 @@ jobs:
               clean: true
               fetchDepth: 1
 
+            # ----------------------------------------------------------------
+            # Phase 1 – Infrastructure only (no Container Apps)
+            # Creates the resource group, storage, ACR, Log Analytics, ML
+            # workspace, Function App, and the ACA environment.
+            # The ACA environment is warm after this phase, making Phase 2
+            # faster and less likely to time out.
+            # ----------------------------------------------------------------
             - task: AzureCLI@2
               displayName: 'Phase 1 – Infrastructure (skip ACA)'
               inputs:
@@ -54,8 +66,14 @@ jobs:
                 AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
                 AZDO_PERSONAL_ACCESS_TOKEN: $(AZDO_PERSONAL_ACCESS_TOKEN)
 
+            # ----------------------------------------------------------------
+            # Phase 2 – Full deploy including Container Apps
+            # Creates the serving app and training job, heals the job if it
+            # failed to provision (student‑subscription timeout), then deploys
+            # the Azure Function blob trigger code.
+            # ----------------------------------------------------------------
             - task: AzureCLI@2
-              displayName: 'Phase 2 – Full deploy with ACA'
+              displayName: 'Phase 2 – Full deploy with ACA + Function'
               inputs:
                 azureSubscription: 'azdo-oidc-cd'
                 addSpnToEnvironment: true

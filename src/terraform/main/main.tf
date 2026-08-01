@@ -7,7 +7,7 @@ data "azurerm_key_vault" "bootstrap" {
 }
 
 # ---------------------------------------------------------------------------
-# State module – resource group, ADLS Gen2 storage, Azure Container Registry
+# State module – resource group, ADLS Gen2 storage, ACR
 # ---------------------------------------------------------------------------
 module "state" {
   source = "./modules/state"
@@ -22,7 +22,7 @@ module "state" {
 }
 
 # ---------------------------------------------------------------------------
-# Observability – Log Analytics, Application Insights, Workbook, alerts
+# Observability
 # ---------------------------------------------------------------------------
 module "observability" {
   source = "./modules/observability"
@@ -44,7 +44,7 @@ module "observability" {
 }
 
 # ---------------------------------------------------------------------------
-# ML workspace – uses the central bootstrap Key Vault
+# ML workspace – uses the bootstrap Key Vault
 # ---------------------------------------------------------------------------
 module "ml_workspace" {
   source = "./modules/ml_workspace"
@@ -53,7 +53,7 @@ module "ml_workspace" {
   location                    = var.location
   environment                 = var.environment
   workspace_name              = local.ml_workspace_name
-  key_vault_id                = data.azurerm_key_vault.bootstrap.id # ← central Key Vault
+  key_vault_id                = data.azurerm_key_vault.bootstrap.id
   ml_storage_account_name     = local.ml_storage_account_name
   datalake_storage_account_id = module.state.storage_account_id
   container_registry_id       = module.state.acr_id
@@ -64,25 +64,36 @@ module "ml_workspace" {
 }
 
 # ---------------------------------------------------------------------------
-# Eventing – storage queue, Event Grid system topic
+# Azure Function – blob trigger that starts the training job
 # ---------------------------------------------------------------------------
-module "eventing" {
-  source = "./modules/eventing"
+module "function" {
+  source = "./modules/function"
 
-  resource_group_name          = module.state.resource_group_name
-  location                     = var.location
-  storage_account_id           = module.state.storage_account_id
-  storage_account_name         = module.state.storage_account_name
-  storage_queue_name           = local.aca_storage_queue_name
-  event_grid_system_topic_name = local.event_grid_system_topic_name
-  event_subscription_name      = local.event_grid_subscription_name
-  raw_container_name           = var.event_raw_container_name
-  raw_blob_prefix              = var.event_raw_blob_prefix
-  tags                         = local.common_tags
+  resource_group_name = module.state.resource_group_name
+  location            = var.location
+  tags                = local.common_tags
+
+  function_app_name         = local.function_app_name
+  service_plan_name         = local.service_plan_name
+  storage_account_name      = local.function_storage_name
+  deployment_container_name = local.function_deployment_container_name
+
+  subscription_id             = var.subscription_id
+  aca_resource_group_name     = module.state.resource_group_name
+  aca_job_name                = local.aca_train_job_name
+  aca_job_id                  = module.aca.train_job_id
+  aca_job_api_version         = "2026-01-01"
+  aca_request_timeout_seconds = 30
+
+  source_storage_account_id            = module.state.storage_account_id
+  source_storage_account_name          = module.state.storage_account_name
+  source_storage_account_blob_endpoint = module.state.storage_account_blob_endpoint
+
+  application_insights_connection_string = module.observability.application_insights_connection_string
 }
 
 # ---------------------------------------------------------------------------
-# ACA – Container Apps Environment, serving app, training job
+# ACA – serving app and training job (manual trigger)
 # ---------------------------------------------------------------------------
 module "aca" {
   source = "./modules/aca"
@@ -99,7 +110,6 @@ module "aca" {
 
   storage_account_id   = module.state.storage_account_id
   storage_account_name = module.state.storage_account_name
-  storage_queue_name   = module.eventing.storage_queue_name
 
   acr_id           = module.state.acr_id
   acr_login_server = module.state.acr_login_server
@@ -110,11 +120,21 @@ module "aca" {
   serve_port                     = var.aca_serve_port
   app_insights_connection_string = module.observability.application_insights_connection_string
 
+  train_cpu                     = var.train_cpu
+  train_memory                  = var.train_memory
+  train_replica_timeout_seconds = var.train_replica_timeout_seconds
+  train_replica_retry_limit     = var.train_replica_retry_limit
+
+  serve_cpu          = var.serve_cpu
+  serve_memory       = var.serve_memory
+  serve_min_replicas = var.serve_min_replicas
+  serve_max_replicas = var.serve_max_replicas
+
   tags = local.common_tags
 }
 
 # ---------------------------------------------------------------------------
-# Azure DevOps – application‑level pipelines and variable groups
+# Azure DevOps pipelines & variable groups
 # ---------------------------------------------------------------------------
 module "azure_devops" {
   source = "./modules/azure_devops"
@@ -141,4 +161,5 @@ module "azure_devops" {
   serve_app_name          = local.aca_serve_app_name
   staging_resource_group  = local.staging_resource_group_name
   prod_resource_group     = local.prod_resource_group_name
+  key_vault_name          = local.bootstrap_key_vault_name
 }

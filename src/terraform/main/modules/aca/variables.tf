@@ -63,15 +63,6 @@ variable "storage_account_name" {
   type        = string
 }
 
-variable "storage_queue_name" {
-  description = "Azure Storage queue used as the event bridge for training."
-  type        = string
-
-  validation {
-    condition     = can(regex("^[a-z0-9-]{3,63}$", var.storage_queue_name))
-    error_message = "storage_queue_name must be 3-63 characters and contain only lowercase letters, digits, and hyphens."
-  }
-}
 
 variable "acr_id" {
   description = "Azure Container Registry ID."

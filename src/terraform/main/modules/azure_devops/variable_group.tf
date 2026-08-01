@@ -62,4 +62,10 @@ resource "azuredevops_variable_group" "sm_all_vars" {
     name  = "PROD_RG"
     value = var.prod_resource_group
   }
+
+  # ---- Key Vault (for pipeline secret fetching) ---------------------------
+  variable {
+    name  = "KEY_VAULT_NAME"
+    value = var.key_vault_name
+  }
 }

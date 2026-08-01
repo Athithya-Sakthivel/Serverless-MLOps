@@ -16,26 +16,8 @@ resource "azurerm_container_app_job" "train" {
     identity = "system"
   }
 
-  event_trigger_config {
-    parallelism              = var.train_parallelism
-    replica_completion_count = var.train_replica_completion_count
-
-    scale {
-      min_executions              = var.train_min_executions
-      max_executions              = var.train_max_executions
-      polling_interval_in_seconds = var.train_polling_interval_seconds
-
-      rules {
-        name             = "training-queue"
-        custom_rule_type = "azure-queue"
-
-        metadata = {
-          accountName = var.storage_account_name
-          queueName   = var.storage_queue_name
-          queueLength = tostring(local.train_queue_length_threshold)
-        }
-      }
-    }
+  manual_trigger_config {
+    parallelism = 1
   }
 
   template {
@@ -69,8 +51,8 @@ resource "azurerm_container_app_job" "train" {
       }
 
       env {
-        name  = "STORAGE_QUEUE_NAME"
-        value = var.storage_queue_name
+        name  = "CHECKPOINT_CONTAINER_NAME"
+        value = "checkpoints"
       }
 
       env {
@@ -83,12 +65,6 @@ resource "azurerm_container_app_job" "train" {
         value = var.ml_workspace_id
       }
     }
-  }
-
-  timeouts {
-    create = "30m"
-    update = "30m"
-    delete = "30m"
   }
 
   tags = var.tags

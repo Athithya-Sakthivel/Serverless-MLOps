@@ -240,6 +240,29 @@ EOF
     log "OpenTofu ${current} installed."
 }
 
+# Add Microsoft signing key
+
+curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+
+| gpg --dearmor \
+
+| sudo tee /etc/apt/trusted.gpg.d/microsoft.gpg >/dev/null
+
+
+# Add Microsoft signing key
+curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+| gpg --dearmor \
+| sudo tee /etc/apt/trusted.gpg.d/microsoft.gpg >/dev/null
+
+# Add Microsoft Ubuntu 24.04 repository
+echo "deb [arch=amd64] https://packages.microsoft.com/repos/microsoft-ubuntu-noble-prod noble main" \
+| sudo tee /etc/apt/sources.list.d/microsoft-prod.list >/dev/null
+
+# Install Azure Functions Core Tools v4 (pinned for ubuntu-24.04)
+sudo apt-get update
+sudo apt-get install -y azure-functions-core-tools-4=4.12.1-1
+
+
 print_versions() {
     echo
     echo "Versions:"
@@ -249,6 +272,7 @@ print_versions() {
     echo "  OpenTofu   : $(tofu version | head -1)"
     echo "  Pytest     : $(pytest --version)"
     echo "  Pre-commit : $(pre-commit --version)"
+    echo "  Azure functions: $(func --version)"
 }
 
 rm -rf .venv

@@ -94,7 +94,7 @@ export TF_VAR_AZDO_PERSONAL_ACCESS_TOKEN="<azure-devops-pat>"   # Generate at ht
 export TF_VAR_AZDO_GITHUB_SERVICE_CONNECTION_PAT="<github-pat>" # Generate at https://github.com/settings/tokens/new
 
 # variable group entries for tf main. 
-export TF_VAR_location=  # example southindia
+export TF_VAR_location=  # example centralindia
 export TF_VAR_alert_email_address=  # example athithya651@gmail.com
 
 bash src/terraform/bootstrap/bootstrap.sh --create
@@ -128,10 +128,16 @@ Assign RBAC roles for local development, then upload sample data to trigger the 
 source .venv/bin/activate
 bash src/scripts/other_roles.sh
 export HF_TOKEN=$HF_TOKEN # Optional huggingface token for faster download
-export MAX_DATASET_ROWS=1_000_000
+export MAX_DATASET_ROWS=1_000_000 
 export ARTIFACTS_STORAGE_ACC_NAME="$(cd /workspace/src/terraform/main && tofu output -raw storage_account_name)"
 python3 src/scripts/simulate_data_upload.py
+
+APP_ID=$(cd /workspace/src/terraform/main && tofu output -raw application_insights_instrumentation_key 2>/dev/null || \
+  az monitor app-insights component show -g rg-sm-artifacts-stg -a appi-sm-stg --query appId -o tsv)
+
 ```
 
-<summary>▶ Expected outputs</summary>
+wait 60 seconds 
 
+
+curl -s "https://func-blob-trigger-stg.azurewebsites.net/admin/host/status?code=$(az functionapp keys list -g rg-sm-artifacts-stg -n func-blob-trigger-stg --query masterKey -o tsv)" | python3 -m json.tool

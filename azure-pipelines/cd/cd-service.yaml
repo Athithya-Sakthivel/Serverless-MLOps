@@ -30,7 +30,7 @@ pool:
 variables:
   - group: sm-all-vars
   - name: kvName
-    value: 'kv-smstgmlf41930'
+    value: 'kv-smstgmlf41930' # should be replaced
 
 stages:
   - stage: canary
