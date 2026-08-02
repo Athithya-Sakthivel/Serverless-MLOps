@@ -1,4 +1,4 @@
-"""ACA Job entrypoint – run ELT, then training."""
+"""ACA Job entrypoint – run ELT, then training"""
 
 from __future__ import annotations
 

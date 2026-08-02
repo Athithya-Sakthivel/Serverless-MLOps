@@ -4,7 +4,7 @@ push:
 	git push origin main
 
 tree:
-	tree -a -I '.venv|.venv1|.repos|.git|.terraform|others'
+	tree -a -I '.venv|__pycache__|.ruff_cache|.venv1|.repos|.venv_train|.venv_serve|.git|.terraform|others'
 
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +

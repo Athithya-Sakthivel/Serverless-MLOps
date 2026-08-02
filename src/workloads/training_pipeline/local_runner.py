@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Local development runner – runs ELT, training, or both."""
 
 from __future__ import annotations
