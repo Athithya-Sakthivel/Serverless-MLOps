@@ -64,11 +64,3 @@ steps:
       AZDO_PERSONAL_ACCESS_TOKEN: $(AZDO_PERSONAL_ACCESS_TOKEN)
       TF_VAR_location: $(TF_VAR_location)
       TF_VAR_alert_email_address: $(TF_VAR_alert_email_address)
-
-  # Publish plan for audit – CD does NOT use this artifact
-  - task: PublishPipelineArtifact@1
-    displayName: 'Publish Terraform plan (audit only)'
-    condition: succeededOrFailed()
-    inputs:
-      targetPath: '$(Build.SourcesDirectory)/src/terraform/main/.plans/staging'
-      artifact: 'terraform-plan'
