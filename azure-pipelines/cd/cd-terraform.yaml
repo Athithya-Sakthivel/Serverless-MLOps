@@ -1,15 +1,11 @@
 # =============================================================================
 # CD – Terraform Apply (manual trigger)
 #
-# Two‑phase deployment to avoid student‑subscription timeouts:
-#   Phase 1 provisions everything except Container Apps so the ACA environment
-#           is created and warm.
-#   Phase 2 deploys the serving app and training job into the warm environment,
-#           heals them if they failed to provision, assigns all RBAC roles,
-#           deploys the Function code, and creates the Event Grid subscription.
-#
-# The pipeline only needs the terraform‑vars variable group (created by
-# bootstrap) for the Azure DevOps PAT and organisation URL.
+# Single‑phase deployment.  Terraform creates all infrastructure (ACA
+# environment, storage, ACR, ML workspace, Function App, Azure DevOps
+# resources).  run.sh then creates the serving app and training job via
+# Azure CLI (avoiding ARM timeouts), assigns all RBAC roles, deploys the
+# Function code, and creates the Event Grid subscription.
 # =============================================================================
 
 trigger: none                # Manual only – triggered from the Azure DevOps UI
@@ -25,7 +21,8 @@ pool:
   vmImage: ubuntu-24.04
 
 variables:
-  - group: terraform-vars          # Contains AZDO_ORG_SERVICE_URL and AZDO_PERSONAL_ACCESS_TOKEN
+  - group: terraform-vars          # AZDO_ORG_SERVICE_URL, AZDO_PERSONAL_ACCESS_TOKEN,
+                                   # TF_VAR_location, TF_VAR_alert_email_address
 
 jobs:
   - deployment: apply_terraform
@@ -39,47 +36,8 @@ jobs:
               clean: true
               fetchDepth: 1
 
-            # ----------------------------------------------------------------
-            # Phase 1 – Infrastructure only (no Container Apps)
-            # Creates the resource group, storage, ACR, Log Analytics, ML
-            # workspace, Function App, and the ACA environment.
-            # The ACA environment is warm after this phase, making Phase 2
-            # faster and less likely to time out.
-            # ----------------------------------------------------------------
             - task: AzureCLI@2
-              displayName: 'Phase 1 – Infrastructure (skip ACA)'
-              inputs:
-                azureSubscription: 'azdo-oidc-cd'
-                addSpnToEnvironment: true
-                scriptType: bash
-                scriptLocation: inlineScript
-                inlineScript: |
-                  set -euo pipefail
-                  cd "$(Build.SourcesDirectory)/src/terraform/main"
-                  chmod +x ./run.sh
-                  export ARM_CLIENT_ID="$servicePrincipalId"
-                  export ARM_TENANT_ID="$tenantId"
-                  export ARM_OIDC_TOKEN="$idToken"
-                  export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
-                  export ARM_USE_OIDC="true"
-                  export TF_IN_AUTOMATION="true"
-                  ./run.sh --create --env staging --skip-aca
-              env:
-                AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
-                AZDO_PERSONAL_ACCESS_TOKEN: $(AZDO_PERSONAL_ACCESS_TOKEN)
-                TF_VAR_location: $(TF_VAR_location)
-                TF_VAR_alert_email_address: $(TF_VAR_alert_email_address)
-
-
-            # ----------------------------------------------------------------
-            # Phase 2 – Full deploy including Container Apps
-            # Creates the serving app and training job via Azure CLI (no
-            # Terraform timeouts), heals them if needed, assigns RBAC roles,
-            # deploys the Function code, and creates the Event Grid
-            # subscription that delivers blob events to the Function.
-            # ----------------------------------------------------------------
-            - task: AzureCLI@2
-              displayName: 'Phase 2 – Full deploy with ACA + Function + Event Grid'
+              displayName: 'Deploy infrastructure + Container Apps + Function + Event Grid'
               inputs:
                 azureSubscription: 'azdo-oidc-cd'
                 addSpnToEnvironment: true
@@ -99,3 +57,5 @@ jobs:
               env:
                 AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
                 AZDO_PERSONAL_ACCESS_TOKEN: $(AZDO_PERSONAL_ACCESS_TOKEN)
+                TF_VAR_location: $(TF_VAR_location)
+                TF_VAR_alert_email_address: $(TF_VAR_alert_email_address)
