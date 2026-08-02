@@ -67,6 +67,9 @@ jobs:
               env:
                 AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
                 AZDO_PERSONAL_ACCESS_TOKEN: $(AZDO_PERSONAL_ACCESS_TOKEN)
+                TF_VAR_location: $(TF_VAR_location)
+                TF_VAR_alert_email_address: $(TF_VAR_alert_email_address)
+
 
             # ----------------------------------------------------------------
             # Phase 2 – Full deploy including Container Apps

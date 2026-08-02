@@ -54,6 +54,7 @@ steps:
         export ARM_OIDC_TOKEN="$idToken"
         export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
         export ARM_USE_OIDC="true"
+        
         export TF_INPUT="false"
 
         ./run.sh --plan --env staging
@@ -61,6 +62,8 @@ steps:
       # Inject non‑secret config and the PAT from the variable group into the shell
       AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
       AZDO_PERSONAL_ACCESS_TOKEN: $(AZDO_PERSONAL_ACCESS_TOKEN)
+      TF_VAR_location: $(TF_VAR_location)
+      TF_VAR_alert_email_address: $(TF_VAR_alert_email_address)
 
   # Publish plan for audit – CD does NOT use this artifact
   - task: PublishPipelineArtifact@1
