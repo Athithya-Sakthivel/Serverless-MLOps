@@ -1,7 +1,10 @@
-# azure-pipelines/cd/cd-training-job.yaml
+# =============================================================================
+# CD – Training Job
 #
-# CD for the training job only.
-# This pipeline is triggered by the training CI completion on main. Approval is required on the first run. 
+# Triggered by the ML Training CI pipeline succeeding on main.
+# Builds the training image, scans it with Trivy, pushes to ACR, then
+# updates the training job's image tag.
+# =============================================================================
 
 trigger: none
 
@@ -31,12 +34,30 @@ stages:
             clean: true
             fetchDepth: 1
 
-          # Debug: verify the variable is set
+          # ------------------------------------------------------------------
+          # Debug: verify that the variable group is authorized and the ACR
+          # name is resolving correctly.  If this step shows an empty value
+          # or "containerRegistry = $(containerRegistry)" literally, the
+          # variable group sm-all-vars has not been authorized for this
+          # pipeline.
+          # ------------------------------------------------------------------
           - bash: |
-              echo "containerRegistry = $(containerRegistry)"
-              echo "CONTAINER_REGISTRY = $CONTAINER_REGISTRY"
-            displayName: 'Debug variables'
-           
+              echo "=== Variable resolution ==="
+              echo "containerRegistry (macro) = $(containerRegistry)"
+              echo "CONTAINER_REGISTRY (env)  = ${CONTAINER_REGISTRY:-UNSET}"
+              echo ""
+              echo "=== All relevant variables from sm-all-vars ==="
+              env | sort | grep -E '^(containerRegistry|AZURE_|MLFLOW|CONTAINER_|STAGING|PROD_|FUNCTION_|TRAIN_)' || echo "(none found)"
+              echo ""
+              echo "=== Azure CLI account ==="
+              az account show -o table 2>/dev/null || echo "(not logged in yet)"
+              echo ""
+              echo "=== Listing all ACRs in subscription ==="
+              az acr list --query "[].{name:name,resourceGroup:resourceGroup,location:location}" -o table 2>/dev/null || echo "(no ACRs found or no access)"
+            displayName: 'Debug: verify variables and ACR access'
+            env:
+              CONTAINER_REGISTRY: $(containerRegistry)
+
           - task: AzureCLI@2
             name: buildOutput
             displayName: 'Build, scan & push training container'
@@ -47,23 +68,18 @@ stages:
               inlineScript: |
                 set -euo pipefail
 
-                # Build an immutable image tag from the triggering training CI commit.
                 LOGIN_SERVER="$(az acr show --name "$CONTAINER_REGISTRY" --query loginServer -o tsv)"
-                SOURCE_COMMIT="${TRAINING_SOURCE_COMMIT}"
-                IMAGE_TAG="training-${SOURCE_COMMIT}"
+                IMAGE_TAG="training-${BUILD_SOURCE_VERSION}"
                 FULL_IMAGE="${LOGIN_SERVER}/training:${IMAGE_TAG}"
 
-                echo "##[section]Triggered by training CI run: ${TRAINING_RUN_NAME}"
                 echo "##[section]Building training image: ${FULL_IMAGE}"
-
                 az acr login --name "$CONTAINER_REGISTRY"
                 docker build \
                   -f src/workloads/training_pipeline/Dockerfile \
                   -t "${FULL_IMAGE}" \
                   src/workloads/training_pipeline
 
-                # Block the release on critical vulnerabilities only.
-                echo "##[section]Scanning image with Trivy (CRITICAL)"
+                echo "##[section]Scanning image with Trivy (CRITICAL only)"
                 TRIVY_VERSION="0.72.0"
                 curl -fsSL --retry 3 --connect-timeout 10 \
                   -o /tmp/trivy.tar.gz \
@@ -79,12 +95,10 @@ stages:
                 echo "##[section]Pushing image: ${FULL_IMAGE}"
                 docker push "${FULL_IMAGE}"
 
-                # Pass the image reference to the deploy stage.
                 echo "##vso[task.setvariable variable=trainingImage;isOutput=true]${FULL_IMAGE}"
             env:
               CONTAINER_REGISTRY: $(containerRegistry)
-              TRAINING_SOURCE_COMMIT: $(resources.pipeline.ciMlTraining.sourceCommit)
-              TRAINING_RUN_NAME: $(resources.pipeline.ciMlTraining.runName)
+              BUILD_SOURCE_VERSION: $(Build.SourceVersion)
 
   - stage: staging
     displayName: 'Deploy to Staging'
@@ -96,46 +110,25 @@ stages:
       - job: deploy_staging
         displayName: 'Update ACA Job – Staging'
         steps:
-          - checkout: self
-            clean: true
-            fetchDepth: 1
-
           - task: AzureCLI@2
-            displayName: 'Update training job (preserve event trigger)'
+            displayName: 'Update training job image'
             inputs:
               azureSubscription: 'azdo-oidc-cd'
               scriptType: bash
               scriptLocation: inlineScript
               inlineScript: |
                 set -euo pipefail
-
-                # Install/upgrade the Container Apps extension if needed.
                 az extension add --name containerapp --upgrade --yes 2>/dev/null || true
 
-                # Export every value the job template needs.
-                export STORAGE_ACCOUNT_NAME="$AZURE_STORAGE_ACCOUNT_NAME"
-                export STORAGE_QUEUE_NAME="$STORAGE_QUEUE_NAME"
-                export MLFLOW_TRACKING_URI="$MLFLOW_TRACKING_URI"
-                export AZUREML_WORKSPACE_ID="$AZUREML_WORKSPACE_ID"
-                export TRAINING_IMAGE="$TRAINING_IMAGE"
-
-                # Render the complete job YAML from the template.
-                JOB_YAML="$(Agent.TempDirectory)/job.yaml"
-                envsubst < src/workloads/training_pipeline/aca-job.yaml > "$JOB_YAML"
-
-                echo "##[section]Applying complete job definition..."
+                echo "Updating training job image to: ${TRAINING_IMAGE}"
                 az containerapp job update \
-                  --name "$CONTAINER_APP_JOB_NAME_STAGING" \
-                  --resource-group "$STAGING_RG" \
-                  --yaml "$JOB_YAML" \
+                  --name "${CONTAINER_APP_JOB_NAME}" \
+                  --resource-group "${STAGING_RG}" \
+                  --image "${TRAINING_IMAGE}" \
                   --output none
 
                 echo "Staging deployment complete."
             env:
-              CONTAINER_APP_JOB_NAME_STAGING: $(CONTAINER_APP_JOB_NAME)
+              CONTAINER_APP_JOB_NAME: $(CONTAINER_APP_JOB_NAME)
               STAGING_RG: $(STAGING_RG)
               TRAINING_IMAGE: $(trainingImage)
-              AZURE_STORAGE_ACCOUNT_NAME: $(AZURE_STORAGE_ACCOUNT_NAME)
-              STORAGE_QUEUE_NAME: $(STORAGE_QUEUE_NAME)
-              MLFLOW_TRACKING_URI: $(MLFLOW_TRACKING_URI)
-              AZUREML_WORKSPACE_ID: $(AZUREML_WORKSPACE_ID)
