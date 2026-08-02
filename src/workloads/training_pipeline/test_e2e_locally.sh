@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
 # =============================================================================
 # test_e2e_locally.sh – Full local end‑to‑end test of the training pipeline.
 #
@@ -17,7 +15,7 @@ set -euo pipefail
 #   - Python virtual env with dependencies (see requirements-ci.txt)
 #   - Terraform/OpenTofu initialised in src/terraform/main
 #   - bash src/scripts/other_roles.sh && bash src/workloads/training_pipeline/ci_checks_locally.sh
-# 
+#
 # Environment variables (all optional, with sensible defaults):
 #   TRAINING_TARGET_INCOME_THRESHOLD   – income threshold for binary target (default: 50000)
 #   TRAIN_RANDOM_SEED                  – random seed (default: 42)
@@ -26,14 +24,17 @@ set -euo pipefail
 #   ENABLE_MODEL_REGISTRATION          – "true" / "false"
 # =============================================================================
 
+set -euo pipefail
+IFS=$'\n\t'
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || pwd)"
 PIPELINE_DIR="$REPO_ROOT/src/workloads/training_pipeline"
 TF_DIR="$REPO_ROOT/src/terraform/main"
 CI_SAMPLE="$REPO_ROOT/src/ci-samples/data.parquet"
 
+# Prevent non‑CLI credentials from interfering (as seen in previous issues)
 unset AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_CLIENT_SECRET AZURE_SUBSCRIPTION_ID
-
 
 FORCE=false
 NEW_RUN=false
@@ -47,7 +48,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ── 1. Terraform outputs (cached for 24h) ────────────────────────────
-# We only need to call `tofu output` once per day; the values rarely change.
 CACHE_FILE="$PIPELINE_DIR/.tf_outputs"
 if [[ -f "$CACHE_FILE" ]] && [[ $(find "$CACHE_FILE" -mtime -1) ]]; then
     echo "Using cached Terraform outputs"
@@ -86,9 +86,12 @@ export CLEAN_CONTAINER_NAME="clean"
 export CHECKPOINT_CONTAINER_NAME="checkpoints"
 export MLFLOW_EXPERIMENT_NAME="${MLFLOW_EXPERIMENT_NAME:-training_pipeline_local_test}"
 export MODEL_NAME="${MODEL_NAME:-acs_income_classifier}"
-export ENABLE_MODEL_REGISTRATION="${ENABLE_MODEL_REGISTRATION:-false}"
+export ENABLE_MODEL_REGISTRATION="${ENABLE_MODEL_REGISTRATION:-true}"
 export TRAINING_TARGET_INCOME_THRESHOLD="${TRAINING_TARGET_INCOME_THRESHOLD:-50000}"
 export TRAIN_RANDOM_SEED="${TRAIN_RANDOM_SEED:-42}"
+
+export MLFLOW_TRACKING_URI="$(cd src/terraform/main && source .bootstrap.generated.env 2>/dev/null; tofu output -raw mlflow_tracking_uri)"
+
 
 # Fixed blob name for idempotent reruns; --new creates a timestamped blob
 if $NEW_RUN; then
@@ -109,9 +112,9 @@ pip install -q azureml-mlflow 2>/dev/null || true
 if $FORCE; then
     echo "Force mode: deleting existing blob and checkpoints for $INPUT_BLOB_NAME"
     python3 -c "
-from azure.identity import DefaultAzureCredential
+from azure.identity import AzureCliCredential
 from azure.storage.blob import BlobServiceClient
-cred = DefaultAzureCredential(exclude_interactive_browser_credential=True)
+cred = AzureCliCredential()
 client = BlobServiceClient(
     account_url='https://${AZURE_STORAGE_ACCOUNT_NAME}.blob.core.windows.net',
     credential=cred,
@@ -146,72 +149,31 @@ except Exception:
 "
 fi
 
-# ── 5. Prepare a test dataset that guarantees both classes ───────────
-# If the existing CI sample does not contain both classes for the current
-# threshold, we generate a synthetic one.  This ensures the pipeline always
-# has a valid binary target to train on.
-echo "Preparing test dataset with threshold=${TRAINING_TARGET_INCOME_THRESHOLD}..."
-
+# ── 5. Validate the CI sample dataset ─────────────────────────────────
+echo "Validating CI sample at ${CI_SAMPLE}..."
 python3 -c "
-import os, sys
 import polars as pl
-import numpy as np
 from pathlib import Path
+import sys
 
 ci_path = Path('${CI_SAMPLE}')
-threshold = int(os.environ['TRAINING_TARGET_INCOME_THRESHOLD'])
-
-# Check if the real CI sample already has both classes – if so, keep it.
-if ci_path.exists():
-    df = pl.read_parquet(ci_path)
-    income = df.get_column('PINCP').cast(pl.Float64)
-    above = (income >= threshold).sum()
-    below = (income < threshold).sum()
-    if above > 0 and below > 0:
-        print(f'CI sample OK: {above} above, {below} below threshold – no replacement needed.')
-        sys.exit(0)
-
-# Generate a balanced synthetic dataset (same schema as ACS)
-n = 2000  # small enough for fast training, large enough for a meaningful split
-rng = np.random.default_rng(42)
-
-# Numeric columns
-agep = rng.integers(18, 80, n).astype(float)
-cow = rng.integers(1, 8, n).astype(float)
-schl = rng.integers(1, 24, n).astype(float)
-mar = rng.integers(1, 5, n).astype(float)
-occp = rng.integers(100, 5000, n).astype(float)
-pobp = rng.integers(1, 100, n).astype(float)
-relp = rng.integers(0, 10, n).astype(float)
-wkhp = rng.integers(0, 60, n).astype(float)
-sex = rng.integers(1, 2, n).astype(float)
-rac1p = rng.integers(1, 9, n).astype(float)
-year = rng.integers(2019, 2025, n).astype(float)
-state = rng.choice(['NY','CA','TX','FL','IL'], n)
-
-# Income: half below threshold, half above
-half = n // 2
-income = np.empty(n, dtype=float)
-income[:half] = rng.integers(max(1000, threshold//2), threshold-1, half).astype(float)
-income[half:] = rng.integers(threshold, threshold+100000, n-half).astype(float)
-rng.shuffle(income)
-
-df = pl.DataFrame({
-    'AGEP': agep, 'COW': cow, 'SCHL': schl, 'MAR': mar, 'OCCP': occp,
-    'POBP': pobp, 'RELP': relp, 'WKHP': wkhp, 'SEX': sex, 'RAC1P': rac1p,
-    'STATE': state, 'YEAR': year, 'PINCP': income
-})
-
-df.write_parquet(ci_path)
-print(f'Replaced CI sample with synthetic data ({n} rows, ~{half} above threshold).')
+if not ci_path.exists():
+    sys.exit('CI sample not found at ${CI_SAMPLE}. Run src/scripts/simulate_data_upload.py first.')
+df = pl.read_parquet(ci_path)
+income = df.get_column('PINCP').cast(pl.Float64)
+above = (income >= ${TRAINING_TARGET_INCOME_THRESHOLD}).sum()
+below = (income < ${TRAINING_TARGET_INCOME_THRESHOLD}).sum()
+if above == 0 or below == 0:
+    sys.exit(f'CI sample does not contain both classes. Please regenerate it.')
+print(f'CI sample OK: {above} above, {below} below threshold.')
 "
 
-# ── 6. Upload the (possibly synthetic) sample to Azure ───────────────
+# ── 6. Upload the CI sample to Azure ─────────────────────────────────
 echo "Checking if blob exists: $INPUT_BLOB_NAME"
 python3 -c "
-from azure.identity import DefaultAzureCredential
+from azure.identity import AzureCliCredential
 from azure.storage.blob import BlobServiceClient
-cred = DefaultAzureCredential(exclude_interactive_browser_credential=True)
+cred = AzureCliCredential()
 client = BlobServiceClient(
     account_url='https://${AZURE_STORAGE_ACCOUNT_NAME}.blob.core.windows.net',
     credential=cred,
@@ -224,11 +186,83 @@ else:
         cc.upload_blob(name='${INPUT_BLOB_NAME}', data=f, overwrite=True)
     print('Upload complete.')
 "
-
-# ── 7. Run the pipeline (identical to ACA) ────────────────────────────
+# ── 7. Run the pipeline and capture its output ────────────────────────
 cd "$PIPELINE_DIR"
-python main.py
+PIPELINE_OUTPUT_FILE="$(mktemp)"
+python main.py 2>&1 | tee "$PIPELINE_OUTPUT_FILE"
 cd "$REPO_ROOT"
 
 echo ""
 echo "Pipeline finished for blob: $INPUT_BLOB_NAME"
+
+# ── 8. Extract the MLflow run ID from the pipeline logs ───────────────
+RUN_ID=$(python3 -c "
+import sys, json
+for line in open('${PIPELINE_OUTPUT_FILE}'):
+    try:
+        record = json.loads(line)
+        msg = record.get('message', '')
+        if 'Pipeline finished' in msg and 'run_id=' in msg:
+            # Message format: '... run_id=<uuid> ...'
+            run_id = msg.split('run_id=')[1].split()[0]
+            print(run_id)
+            break
+    except Exception:
+        continue
+")
+rm -f "$PIPELINE_OUTPUT_FILE"
+
+if [[ -z "${RUN_ID}" ]]; then
+    echo "WARNING: Could not extract run ID from pipeline output."
+    echo "Skipping evaluation report fetch."
+else
+    echo "Pipeline run ID: ${RUN_ID}"
+    echo ""
+    echo "Fetching evaluation report..."
+
+    python3 -c "
+from mlflow.artifacts import download_artifacts
+import json, tempfile
+run_id = '${RUN_ID}'
+with tempfile.TemporaryDirectory() as tmp:
+    local = download_artifacts(
+        artifact_uri=f'runs:/{run_id}/reports/metrics.json',
+        dst_path=tmp,
+        tracking_uri='${MLFLOW_TRACKING_URI}'
+    )
+    metrics = json.load(open(local))
+    # -- Pretty‑print the relevant sections --------------------------------
+    eval_data = metrics.get('evaluation', {})
+    val = eval_data.get('validation', {})
+    test = eval_data.get('test', {})
+    print('==============================================================')
+    print('                 MODEL EVALUATION REPORT')
+    print('==============================================================')
+    print(f' Run ID          : {run_id}')
+    print(f' ONNX SHA256     : {metrics.get(\"onnx_sha256\", \"N/A\")}')
+    print(f' Best iteration  : {metrics.get(\"best_iteration\", \"N/A\")}')
+    if metrics.get('onnx_performance'):
+        perf = metrics['onnx_performance']
+        print(f' P50 latency     : {perf.get(\"p50_latency_ms\", \"N/A\")} ms')
+        print(f' P95 latency     : {perf.get(\"p95_latency_ms\", \"N/A\")} ms')
+        print(f' Throughput      : {perf.get(\"throughput_rows_per_sec\", \"N/A\"):,.0f} rows/s')
+    print()
+    print(' Validation metrics:')
+    for k, v in val.items():
+        print(f'   {k:30s} {v}')
+    print()
+    print(' Test metrics:')
+    for k, v in test.items():
+        print(f'   {k:30s} {v}')
+    print()
+    fi = metrics.get('feature_importance', [])
+    if fi:
+        print(' Top 5 features (gain):')
+        for rank, feat in enumerate(fi[:5], 1):
+            print(f'   {rank}. {feat[\"feature\"]:30s} {feat[\"gain\"]:.4f}')
+    print('==============================================================')
+"
+fi
+
+echo ""
+echo "Full pipeline execution completed."

@@ -90,9 +90,8 @@ module "function" {
 
   application_insights_connection_string = module.observability.application_insights_connection_string
 }
+
 # ==============================================================================
-# Root main.tf – module "aca" block
-#
 # Only the ACA environment is wired here.  The serving app and training job
 # are created later by run.sh after the environment is fully provisioned.
 # This avoids the ARM "Operation expired" timeout that occurs when Terraform

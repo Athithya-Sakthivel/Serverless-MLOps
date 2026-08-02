@@ -95,7 +95,8 @@ def train_lightgbm_classifier(
     classifier.fit(
         X_train,
         y_train,
-        eval_set=[(X_validation, y_validation)],
+        eval_X=X_validation,
+        eval_y=y_validation,
         eval_metric="auc",
         callbacks=[
             lgb.early_stopping(

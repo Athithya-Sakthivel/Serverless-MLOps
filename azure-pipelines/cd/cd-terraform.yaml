@@ -4,9 +4,12 @@
 # Two‑phase deployment to avoid student‑subscription timeouts:
 #   Phase 1 provisions everything except Container Apps so the ACA environment
 #           is created and warm.
-#   Phase 2 deploys the training job and serving app into the warm environment,
-#           heals the job if it failed to provision, then deploys the Azure
-#           Function blob trigger.
+#   Phase 2 deploys the serving app and training job into the warm environment,
+#           heals them if they failed to provision, assigns all RBAC roles,
+#           deploys the Function code, and creates the Event Grid subscription.
+#
+# The pipeline only needs the terraform‑vars variable group (created by
+# bootstrap) for the Azure DevOps PAT and organisation URL.
 # =============================================================================
 
 trigger: none                # Manual only – triggered from the Azure DevOps UI
@@ -21,14 +24,13 @@ resources:
 pool:
   vmImage: ubuntu-24.04
 
-# Non‑secret configuration and the Azure DevOps PAT are in terraform‑vars
 variables:
-  - group: terraform-vars
+  - group: terraform-vars          # Contains AZDO_ORG_SERVICE_URL and AZDO_PERSONAL_ACCESS_TOKEN
 
 jobs:
   - deployment: apply_terraform
     displayName: 'Apply Terraform – Staging'
-    environment: staging         # Requires manual approval defined in Azure DevOps
+    environment: staging           # Requires manual approval defined in Azure DevOps
     strategy:
       runOnce:
         deploy:
@@ -68,12 +70,13 @@ jobs:
 
             # ----------------------------------------------------------------
             # Phase 2 – Full deploy including Container Apps
-            # Creates the serving app and training job, heals the job if it
-            # failed to provision (student‑subscription timeout), then deploys
-            # the Azure Function blob trigger code.
+            # Creates the serving app and training job via Azure CLI (no
+            # Terraform timeouts), heals them if needed, assigns RBAC roles,
+            # deploys the Function code, and creates the Event Grid
+            # subscription that delivers blob events to the Function.
             # ----------------------------------------------------------------
             - task: AzureCLI@2
-              displayName: 'Phase 2 – Full deploy with ACA + Function'
+              displayName: 'Phase 2 – Full deploy with ACA + Function + Event Grid'
               inputs:
                 azureSubscription: 'azdo-oidc-cd'
                 addSpnToEnvironment: true

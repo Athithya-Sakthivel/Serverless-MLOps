@@ -113,7 +113,8 @@ STORAGE_SCOPE="/subscriptions/${AZURE_SUBSCRIPTION_ID}/resourceGroups/rg-sm-arti
 echo "  Scope: ${STORAGE_SCOPE}"
 
 assign_role "$USER_OBJECT_ID" "Storage Blob Data Contributor" "$STORAGE_SCOPE"
-echo ""
+echo "sleep 30"
+sleep 30
 
 # ---------------------------------------------------------------------------
 # Done

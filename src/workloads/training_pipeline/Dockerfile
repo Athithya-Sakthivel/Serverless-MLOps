@@ -36,8 +36,9 @@ ENV VIRTUAL_ENV=/opt/venv \
     PATH=/opt/venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONUTF8=1
-
+    PYTHONUTF8=1 \
+    ORT_DISABLE_WARNINGS=1
+    
 # Create an unprivileged runtime account.
 RUN groupadd --system app && \
     useradd --system --gid app --create-home --home-dir /home/app app
