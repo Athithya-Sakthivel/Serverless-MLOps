@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# CI – Machine Learning Training Code
+# CI – ML Training pipeline
 #
 # Validates the complete training pipeline (ELT + model code) with all tests.
 # No Docker build, no deployment.

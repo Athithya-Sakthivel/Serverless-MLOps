@@ -26,14 +26,12 @@ parameters:
   - name: modelVersion
     displayName: 'Model version to promote'
     type: string
-    default: ''                     # empty → image‑only update
+    default: ''
 
 pool:
   vmImage: ubuntu-24.04
 
 variables:
-  # All non‑secret configuration (Container App name, resource group,
-  # container registry, etc.) is in sm‑all‑vars.
   - group: sm-all-vars
 
 stages:
@@ -49,20 +47,21 @@ stages:
               steps:
                 - checkout: self
 
-                # ----------------------------------------------------------
-                # Derive the bootstrap Key Vault name from the subscription.
-                # ----------------------------------------------------------
-                - bash: |
-                    SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
-                    KV_NAME="kv-azdo-bootstrap-${SUBSCRIPTION_ID: -6}"
-                    echo "##vso[task.setvariable variable=kvName]${KV_NAME}"
+                # Derive the bootstrap Key Vault name (authenticated)
+                - task: AzureCLI@2
                   displayName: 'Derive Key Vault name'
+                  inputs:
+                    azureSubscription: 'azdo-oidc-cd'
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+                      SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+                      KV_NAME="kv-azdo-bootstrap-${SUBSCRIPTION_ID: -6}"
+                      echo "Key Vault: ${KV_NAME}"
+                      echo "##vso[task.setvariable variable=kvName]${KV_NAME}"
 
-                # ----------------------------------------------------------
-                # Fetch the rollback webhook secret from Key Vault.
-                # The script uses it to call an external service if the
-                # canary fails and a rollback is needed.
-                # ----------------------------------------------------------
+                # Fetch the rollback webhook from Key Vault
                 - task: AzureKeyVault@2
                   displayName: 'Fetch rollback-webhook from Key Vault'
                   inputs:
@@ -88,7 +87,4 @@ stages:
                       --canary-steps 10,50
                       --k6-script tests/load/k6-script.js
                   env:
-                    # The rollback webhook is passed to the canary script
-                    # so it can notify an external system if a rollback
-                    # occurs.
                     ROLLBACK_WEBHOOK: $(rollback-webhook)

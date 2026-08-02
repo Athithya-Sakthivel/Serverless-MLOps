@@ -8,7 +8,7 @@
 # The Azure DevOps PAT is fetched from the bootstrap Key Vault at runtime.
 # =============================================================================
 
-trigger: none                # Manual only – triggered from the Azure DevOps UI
+trigger: none
 
 resources:
   pipelines:
@@ -21,14 +21,12 @@ pool:
   vmImage: ubuntu-24.04
 
 variables:
-  # Non‑secret values: AZDO_ORG_SERVICE_URL, TF_VAR_location,
-  # TF_VAR_alert_email_address.  PAT is fetched from Key Vault.
   - group: terraform-vars
 
 jobs:
   - deployment: apply_terraform
     displayName: 'Apply Terraform – Staging'
-    environment: staging           # Requires manual approval defined in Azure DevOps
+    environment: staging
     strategy:
       runOnce:
         deploy:
@@ -37,20 +35,21 @@ jobs:
               clean: true
               fetchDepth: 1
 
-            # ----------------------------------------------------------------
-            # Derive the bootstrap Key Vault name from the subscription ID.
-            # ----------------------------------------------------------------
-            - bash: |
-                SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
-                KV_NAME="kv-azdo-bootstrap-${SUBSCRIPTION_ID: -6}"
-                echo "##vso[task.setvariable variable=kvName]${KV_NAME}"
+            # Derive the bootstrap Key Vault name (authenticated)
+            - task: AzureCLI@2
               displayName: 'Derive Key Vault name'
+              inputs:
+                azureSubscription: 'azdo-oidc-cd'
+                scriptType: bash
+                scriptLocation: inlineScript
+                inlineScript: |
+                  set -euo pipefail
+                  SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+                  KV_NAME="kv-azdo-bootstrap-${SUBSCRIPTION_ID: -6}"
+                  echo "Key Vault: ${KV_NAME}"
+                  echo "##vso[task.setvariable variable=kvName]${KV_NAME}"
 
-            # ----------------------------------------------------------------
-            # Fetch the Azure DevOps PAT from the bootstrap Key Vault.
-            # The CD service principal (azdo-oidc-cd) has Key Vault Secrets
-            # User role.
-            # ----------------------------------------------------------------
+            # Fetch the Azure DevOps PAT from Key Vault
             - task: AzureKeyVault@2
               displayName: 'Fetch azdo-pat from Key Vault'
               inputs:
@@ -58,9 +57,7 @@ jobs:
                 KeyVaultName: $(kvName)
                 SecretsFilter: 'azdo-pat'
 
-            # ----------------------------------------------------------------
-            # Single‑phase deploy.
-            # ----------------------------------------------------------------
+            # Single‑phase deploy
             - task: AzureCLI@2
               displayName: 'Deploy infrastructure + Container Apps + Function + Event Grid'
               inputs:
@@ -81,6 +78,6 @@ jobs:
                   ./run.sh --create --env staging
               env:
                 AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
-                AZDO_PERSONAL_ACCESS_TOKEN: $(azdo-pat)       # from Key Vault
+                AZDO_PERSONAL_ACCESS_TOKEN: $(azdo-pat)
                 TF_VAR_location: $(TF_VAR_location)
                 TF_VAR_alert_email_address: $(TF_VAR_alert_email_address)

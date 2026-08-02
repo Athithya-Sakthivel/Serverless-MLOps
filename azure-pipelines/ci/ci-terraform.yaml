@@ -26,29 +26,30 @@ pool:
   vmImage: ubuntu-24.04
 
 variables:
-  # Non‑secret values only: TF_VAR_location, TF_VAR_alert_email_address,
-  # AZDO_ORG_SERVICE_URL.  The PAT secret was removed from this group.
-  - group: terraform-vars
+  - group: terraform-vars          # TF_VAR_location, TF_VAR_alert_email_address,
+                                   # AZDO_ORG_SERVICE_URL (no secrets)
 
 steps:
   - checkout: self
     clean: true
     fetchDepth: 1
 
-  # --------------------------------------------------------------------------
   # Derive the bootstrap Key Vault name from the subscription ID.
-  # The vault name is always kv-azdo-bootstrap-<last 6 chars of sub ID>.
-  # --------------------------------------------------------------------------
-  - bash: |
-      SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
-      KV_NAME="kv-azdo-bootstrap-${SUBSCRIPTION_ID: -6}"
-      echo "##vso[task.setvariable variable=kvName]${KV_NAME}"
+  # Must use AzureCLI@2 (not bash) because az account show requires auth.
+  - task: AzureCLI@2
     displayName: 'Derive Key Vault name'
+    inputs:
+      azureSubscription: 'azdo-oidc-ci'
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+        SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+        KV_NAME="kv-azdo-bootstrap-${SUBSCRIPTION_ID: -6}"
+        echo "Key Vault: ${KV_NAME}"
+        echo "##vso[task.setvariable variable=kvName]${KV_NAME}"
 
-  # --------------------------------------------------------------------------
-  # Fetch the Azure DevOps PAT from the bootstrap Key Vault.
-  # The CI service principal (azdo-oidc-ci) has Key Vault Secrets User role.
-  # --------------------------------------------------------------------------
+  # Fetch the Azure DevOps PAT from the bootstrap Key Vault
   - task: AzureKeyVault@2
     displayName: 'Fetch azdo-pat from Key Vault'
     inputs:
@@ -56,9 +57,7 @@ steps:
       KeyVaultName: $(kvName)
       SecretsFilter: 'azdo-pat'
 
-  # --------------------------------------------------------------------------
-  # Run tofu plan.  The PAT is injected via the env: block.
-  # --------------------------------------------------------------------------
+  # Run tofu plan
   - task: AzureCLI@2
     displayName: 'Terraform plan'
     inputs:
@@ -70,18 +69,15 @@ steps:
         set -euo pipefail
         cd "$(Build.SourcesDirectory)/src/terraform/main"
         chmod +x ./run.sh
-
-        # OIDC credentials injected by AzureCLI task
         export ARM_CLIENT_ID="$servicePrincipalId"
         export ARM_TENANT_ID="$tenantId"
         export ARM_OIDC_TOKEN="$idToken"
         export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
         export ARM_USE_OIDC="true"
         export TF_INPUT="false"
-
         ./run.sh --plan --env staging
     env:
       AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
-      AZDO_PERSONAL_ACCESS_TOKEN: $(azdo-pat)          # from Key Vault
+      AZDO_PERSONAL_ACCESS_TOKEN: $(azdo-pat)
       TF_VAR_location: $(TF_VAR_location)
       TF_VAR_alert_email_address: $(TF_VAR_alert_email_address)
