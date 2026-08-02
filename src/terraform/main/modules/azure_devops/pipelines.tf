@@ -231,3 +231,10 @@ resource "azuredevops_pipeline_authorization" "service_cd_production_env" {
   type        = "environment"
   pipeline_id = azuredevops_build_definition.service_cd.id
 }
+
+resource "azuredevops_pipeline_authorization" "train_cd_variable_group" {
+  project_id  = data.azuredevops_project.main.id
+  resource_id = azuredevops_variable_group.sm_all_vars.id
+  type        = "variablegroup"
+  pipeline_id = azuredevops_build_definition.training_cd.id
+}

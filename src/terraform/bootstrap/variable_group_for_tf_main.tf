@@ -27,9 +27,5 @@ resource "azuredevops_variable_group" "terraform_vars" {
     value = var.AZDO_ORG_SERVICE_URL
   }
 
-  variable {
-    name         = "AZDO_PERSONAL_ACCESS_TOKEN"
-    secret_value = var.AZDO_PERSONAL_ACCESS_TOKEN
-    is_secret    = true
-  }
+
 }

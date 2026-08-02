@@ -83,25 +83,29 @@ Microsoft recommends using GitHub as the primary repository and source of truth 
 </details>
 
 ---
-## PHASE 1.2: Bootstrap Azure DevOps and Terraform Backend
+## PHASE 1.2: Bootstrap Azure DevOps and Terraform Backend  (one time, locally)
 
 This script provisions the Terraform state backend and bootstraps Azure DevOps (project, GitHub service connection, OIDC federation, service connections, and security scan pipeline). Upon success, it trigger Terraform CI pipeline and outputs the pipeline URLs. Idempotent. The bootstrap process provisions Workload Identity Federation (WIF) so downstream CI/CD pipelines authenticate via OIDC — no stored secrets, no certificates, no rotation.
 
 
 ```bash
 export TF_VAR_AZDO_ORG_SERVICE_URL="https://dev.azure.com/<organization_name>"
-export TF_VAR_AZDO_PERSONAL_ACCESS_TOKEN="<azure-devops-pat>"   # Generate at https://dev.azure.com/<organization_name>/_usersSettings/tokens
 export TF_VAR_AZDO_GITHUB_SERVICE_CONNECTION_PAT="<github-pat>" # Generate at https://github.com/settings/tokens/new
 
 # variable group entries for tf main. 
 export TF_VAR_location=  # example centralindia
 export TF_VAR_alert_email_address=  # example athithya651@gmail.com
 
+# key vault secrets
+export TF_VAR_AZDO_PERSONAL_ACCESS_TOKEN="<azure-devops-pat>"   # Generate at https://dev.azure.com/<organization_name>/_usersSettings/tokens
+export TF_VAR_rollback_webhook_url # optional canary rollback slack alert url
+
 bash src/terraform/bootstrap/bootstrap.sh --create
 sleep 5
 git add . && git commit -m "bootstrap extend" && git push origin main
 
 ```
+
 <summary>▶ Expected outputs</summary>
 
 

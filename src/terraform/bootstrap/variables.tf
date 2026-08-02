@@ -101,3 +101,10 @@ variable "alert_email_address" {
   type        = string
   default     = "athithya651@gmail.com"
 }
+
+variable "rollback_webhook_url" {
+  description = "Slack / Teams webhook URL for canary rollback alerts (optional)."
+  type        = string
+  default     = ""
+  sensitive   = true
+}

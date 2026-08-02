@@ -26,6 +26,7 @@ export STATE_STORAGE_ACC_NAME="smstatesa${SUBSCRIPTION_SUFFIX}"
 export STATE_TF_CONTAINER_NAME="tfbackend"
 export TF_VAR_location="centralindia"
 export TF_VAR_state_rg="$STATE_RG"
+export TF_VAR_rollback_webhook_url="${TF_VAR_rollback_webhook_url:-}"
 
 export TZ="Asia/Kolkata"
 export TF_IN_AUTOMATION="true"
