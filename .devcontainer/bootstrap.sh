@@ -275,7 +275,7 @@ print_versions() {
     echo "  Azure functions: $(func --version)"
 }
 
-rm -rf .venv
+rm -rf .venv || true
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r src/scripts/requirements.txt
 

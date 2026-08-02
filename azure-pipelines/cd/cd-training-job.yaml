@@ -31,6 +31,12 @@ stages:
             clean: true
             fetchDepth: 1
 
+          # Debug: verify the variable is set
+          - bash: |
+              echo "containerRegistry = $(containerRegistry)"
+              echo "CONTAINER_REGISTRY = $CONTAINER_REGISTRY"
+            displayName: 'Debug variables'
+           
           - task: AzureCLI@2
             name: buildOutput
             displayName: 'Build, scan & push training container'
