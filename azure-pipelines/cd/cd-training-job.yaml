@@ -1,7 +1,7 @@
 # =============================================================================
 # CD – Training Job (staging only, no approvals)
 #
-# Triggered when either the ELT CI or ML-Training CI pipeline succeeds on
+# Triggered when either the ELT CI or ML‑Training CI pipeline succeeds on
 # main.  Builds the training image, scans it, pushes to ACR, ensures the
 # job identity has AcrPull, then updates the training job's image tag.
 # =============================================================================
@@ -27,7 +27,7 @@ pool:
   vmImage: ubuntu-24.04
 
 variables:
-  - group: sm-all-vars
+  - group: sm-all-vars            # Contains containerRegistry, STAGING_RG, CONTAINER_APP_JOB_NAME, etc.
 
 stages:
   # --------------------------------------------------------------------------
@@ -98,6 +98,9 @@ stages:
       - job: deploy_staging
         displayName: 'Update ACA Job – Staging'
         steps:
+          # ------------------------------------------------------------------
+          # Step 1 – Ensure the job's managed identity can pull from ACR.
+          # ------------------------------------------------------------------
           - task: AzureCLI@2
             displayName: 'Ensure job has AcrPull role'
             inputs:
@@ -108,12 +111,15 @@ stages:
                 set -euo pipefail
                 az extension add --name containerapp --upgrade --yes 2>/dev/null || true
 
+                # Derive subscription ID from the active Azure CLI session
+                SUB_ID="$(az account show --query id -o tsv)"
+
                 JOB_PRINCIPAL=$(az containerapp job show \
                   --name "${CONTAINER_APP_JOB_NAME}" \
                   --resource-group "${STAGING_RG}" \
                   --query "identity.principalId" -o tsv)
 
-                ACR_ID="/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${STAGING_RG}/providers/Microsoft.ContainerRegistry/registries/${CONTAINER_REGISTRY}"
+                ACR_ID="/subscriptions/${SUB_ID}/resourceGroups/${STAGING_RG}/providers/Microsoft.ContainerRegistry/registries/${CONTAINER_REGISTRY}"
 
                 EXISTING=$(az role assignment list \
                   --assignee "$JOB_PRINCIPAL" \
@@ -138,8 +144,10 @@ stages:
               CONTAINER_APP_JOB_NAME: $(CONTAINER_APP_JOB_NAME)
               STAGING_RG: $(STAGING_RG)
               CONTAINER_REGISTRY: $(containerRegistry)
-              SUBSCRIPTION_ID: $(subscriptionId)
 
+          # ------------------------------------------------------------------
+          # Step 2 – Update the training job image.
+          # ------------------------------------------------------------------
           - task: AzureCLI@2
             displayName: 'Update training job image'
             inputs:
