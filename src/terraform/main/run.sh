@@ -627,16 +627,36 @@ PLAN_FILE="$PLAN_DIR/plan.tfplan"
 VAR_FILE="$SCRIPT_DIR/environments/${ENVIRONMENT}.tfvars"
 
 case "$MODE" in
+  # --------------------------------------------------------------------------
+  # --validate: format and validate Terraform code without connecting to Azure
+  # --------------------------------------------------------------------------
   --validate)
     prepare_stack
     ;;
 
+  # --------------------------------------------------------------------------
+  # --plan: generate a Terraform plan file and save it for audit
+  # --------------------------------------------------------------------------
   --plan)
     [[ -f "$VAR_FILE" ]] || fail "variable file not found: $VAR_FILE"
     run_plan
     log "plan written to $PLAN_FILE"
     ;;
 
+  # --------------------------------------------------------------------------
+  # --create: provision or update the full infrastructure
+  #
+  # Two modes controlled by the --skip-aca flag:
+  #   --skip-aca  → infrastructure only (environment, storage, ACR, Function, etc.)
+  #                  Container Apps are deleted first so the environment can be
+  #                  safely replaced if needed.  Phase 2 (without --skip-aca)
+  #                  will recreate them.
+  #   (no flag)   → full deploy: applies Terraform plan, then creates/heals
+  #                  the serving app and training job via Azure CLI (avoids ARM
+  #                  "Operation expired" on student subscriptions), assigns all
+  #                  RBAC roles, deploys the Function code, and creates the
+  #                  Event Grid subscription.
+  # --------------------------------------------------------------------------
   --create)
     [[ -f "$VAR_FILE" ]] || fail "variable file not found: $VAR_FILE"
     run_plan
@@ -644,10 +664,10 @@ case "$MODE" in
 
     if $SKIP_ACA; then
       # ----------------------------------------------------------------
-      # Infrastructure-only deploy – creates the ACA environment, storage,
-      # ACR, ML workspace, Function App, and Azure DevOps resources.
-      # The environment is warm after this phase, so the next --create
-      # (without --skip-aca) will provision Container Apps quickly.
+      # Phase 1 – Infrastructure only.
+      # Delete any existing CLI‑managed Container Apps so the ACA
+      # environment can be replaced safely.  They will be recreated in
+      # the next --create run without --skip-aca.
       # ----------------------------------------------------------------
       log "deleting CLI-managed Container Apps before infrastructure apply"
       derive_names
@@ -667,20 +687,19 @@ case "$MODE" in
         -target=module.function \
         -target=module.azure_devops \
         "$PLAN_FILE"
-    fi
     else
       # ----------------------------------------------------------------
-      # Full deploy – applies the Terraform plan, then uses the Azure CLI
-      # to create/heal the serving app and training job (avoids ARM
-      # "Operation expired" on student subscriptions), assigns all RBAC
-      # roles, deploys the Function code, and creates the Event Grid
-      # subscription that delivers blob events to the Function webhook.
+      # Phase 2 – Full deploy.
+      # Apply the Terraform plan (may fail on student subscriptions due
+      # to timeouts; the CLI healing steps below will fix any failed
+      # resources), then create/heal the Container Apps, assign RBAC,
+      # deploy the Function, and wire up Event Grid.
       # ----------------------------------------------------------------
       tofu apply -input=false -lock-timeout=5m -auto-approve "$PLAN_FILE" || {
         log "Terraform apply had errors – continuing with CLI healing"
       }
 
-      # Read outputs from Terraform that the CLI-managed resources need
+      # Read Terraform outputs required by the CLI‑managed resources
       ML_WORKSPACE_ID="$(get_tofu_output ml_workspace_id)"
       MLFLOW_TRACKING_URI="$(get_tofu_output mlflow_tracking_uri)"
       APPLICATIONINSIGHTS_CONNECTION_STRING="$(get_tofu_output application_insights_connection_string)"
@@ -701,30 +720,33 @@ case "$MODE" in
       log "deploying function code"
       deploy_function_code
 
-      # 5. Create the Event Grid subscription that delivers blob‑created
-      #    events to the Function's blob trigger webhook.  Must run after
-      #    code deployment because the blobs_extension system key is only
-      #    available once the host has indexed the trigger.
+      # 5. Create the Event Grid subscription.  Must run after code
+      #    deployment because the blobs_extension system key is only
+      #    available once the host has indexed the blob trigger.
       log "creating Event Grid subscription"
       create_event_grid_subscription
     fi
     ;;
 
+  # --------------------------------------------------------------------------
+  # --apply-plan: apply a previously‑generated plan file without re‑planning
+  # --------------------------------------------------------------------------
   --apply-plan)
     run_apply_plan
     ;;
 
+  # --------------------------------------------------------------------------
+  # --destroy: tear down the full environment
+  #
+  # Deletes CLI‑managed Container Apps first so the ACA environment can be
+  # removed, then runs Terraform destroy to delete all infrastructure.
+  # Also purges soft‑deleted Key Vault and ML workspace.
+  # Requires --yes-delete for safety.
+  # --------------------------------------------------------------------------
   --destroy)
     $YES_DELETE || fail "--yes-delete required"
     [[ -f "$VAR_FILE" ]] || fail "variable file not found: $VAR_FILE"
 
-    # ----------------------------------------------------------------
-    # Delete CLI‑managed Container Apps before Terraform destroy.
-    # These are not tracked by Terraform (they are created by run.sh
-    # via az containerapp create), so they must be removed first.
-    # Otherwise Azure refuses to delete the ACA environment because it
-    # still contains live Container Apps.
-    # ----------------------------------------------------------------
     log "deleting CLI-managed Container Apps"
     derive_names
     az containerapp delete \
