@@ -24,7 +24,7 @@
 #   bash src/terraform/main/run.sh --create  --env staging
 # ==============================================================================
 
-set -euo pipefail
+
 IFS=$'\n\t'
 
 # Always run from the script's own directory

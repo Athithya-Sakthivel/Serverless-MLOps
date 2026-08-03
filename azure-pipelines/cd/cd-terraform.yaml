@@ -21,12 +21,13 @@ pool:
   vmImage: ubuntu-24.04
 
 variables:
-  - group: terraform-vars
+  - group: terraform-vars          # Non‑secret values: AZDO_ORG_SERVICE_URL,
+                                   # TF_VAR_location, TF_VAR_alert_email_address
 
 jobs:
   - deployment: apply_terraform
     displayName: 'Apply Terraform – Staging'
-    environment: staging
+    environment: staging           # Requires manual approval defined in Azure DevOps
     strategy:
       runOnce:
         deploy:
@@ -35,7 +36,12 @@ jobs:
               clean: true
               fetchDepth: 1
 
-            # Derive the bootstrap Key Vault name (authenticated)
+            # ----------------------------------------------------------------
+            # Derive the bootstrap Key Vault name from the subscription ID.
+            # The vault name is always kv-azdo-bootstrap-<subscription_suffix>.
+            # We need an authenticated az session, so this runs as its own
+            # AzureCLI task before the Key Vault fetch.
+            # ----------------------------------------------------------------
             - task: AzureCLI@2
               displayName: 'Derive Key Vault name'
               inputs:
@@ -49,7 +55,11 @@ jobs:
                   echo "Key Vault: ${KV_NAME}"
                   echo "##vso[task.setvariable variable=kvName]${KV_NAME}"
 
-            # Fetch the Azure DevOps PAT from Key Vault
+            # ----------------------------------------------------------------
+            # Fetch the Azure DevOps PAT from the bootstrap Key Vault.
+            # The CD service principal (azdo-oidc-cd) has Key Vault Secrets
+            # User role.
+            # ----------------------------------------------------------------
             - task: AzureKeyVault@2
               displayName: 'Fetch azdo-pat from Key Vault'
               inputs:
@@ -57,7 +67,10 @@ jobs:
                 KeyVaultName: $(kvName)
                 SecretsFilter: 'azdo-pat'
 
-            # Single‑phase deploy
+            # ----------------------------------------------------------------
+            # Single‑phase deploy: infrastructure + Container Apps +
+            # Function code + Event Grid subscription.
+            # ----------------------------------------------------------------
             - task: AzureCLI@2
               displayName: 'Deploy infrastructure + Container Apps + Function + Event Grid'
               inputs:
@@ -69,15 +82,17 @@ jobs:
                   set -euo pipefail
                   cd "$(Build.SourcesDirectory)/src/terraform/main"
                   chmod +x ./run.sh
+
                   export ARM_CLIENT_ID="$servicePrincipalId"
                   export ARM_TENANT_ID="$tenantId"
                   export ARM_OIDC_TOKEN="$idToken"
                   export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
                   export ARM_USE_OIDC="true"
                   export TF_IN_AUTOMATION="true"
+
                   ./run.sh --create --env staging
               env:
                 AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
-                AZDO_PERSONAL_ACCESS_TOKEN: $(azdo-pat)
+                AZDO_PERSONAL_ACCESS_TOKEN: $(azdo-pat)       # from Key Vault
                 TF_VAR_location: $(TF_VAR_location)
                 TF_VAR_alert_email_address: $(TF_VAR_alert_email_address)
