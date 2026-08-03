@@ -649,6 +649,16 @@ case "$MODE" in
       # The environment is warm after this phase, so the next --create
       # (without --skip-aca) will provision Container Apps quickly.
       # ----------------------------------------------------------------
+      log "deleting CLI-managed Container Apps before infrastructure apply"
+      derive_names
+      az containerapp delete \
+        --name "$SERVE_APP_NAME" --resource-group "$RG_NAME" \
+        --yes --output none 2>/dev/null || true
+      az containerapp job delete \
+        --name "$TRAIN_JOB_NAME" --resource-group "$RG_NAME" \
+        --yes --output none 2>/dev/null || true
+      sleep 10
+
       log "applying infrastructure only (skipping Container Apps)"
       tofu apply -input=false -lock-timeout=5m -auto-approve \
         -target=module.state \
@@ -657,6 +667,7 @@ case "$MODE" in
         -target=module.function \
         -target=module.azure_devops \
         "$PLAN_FILE"
+    fi
     else
       # ----------------------------------------------------------------
       # Full deploy – applies the Terraform plan, then uses the Azure CLI

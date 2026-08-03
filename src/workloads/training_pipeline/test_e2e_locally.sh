@@ -90,9 +90,6 @@ export ENABLE_MODEL_REGISTRATION="${ENABLE_MODEL_REGISTRATION:-true}"
 export TRAINING_TARGET_INCOME_THRESHOLD="${TRAINING_TARGET_INCOME_THRESHOLD:-50000}"
 export TRAIN_RANDOM_SEED="${TRAIN_RANDOM_SEED:-42}"
 
-export MLFLOW_TRACKING_URI="$(cd src/terraform/main && source .bootstrap.generated.env 2>/dev/null; tofu output -raw mlflow_tracking_uri)"
-
-
 # Fixed blob name for idempotent reruns; --new creates a timestamped blob
 if $NEW_RUN; then
     TEST_ID="local-$(date +%Y%m%d-%H%M%S)"
@@ -186,83 +183,111 @@ else:
         cc.upload_blob(name='${INPUT_BLOB_NAME}', data=f, overwrite=True)
     print('Upload complete.')
 "
-# ── 7. Run the pipeline and capture its output ────────────────────────
+
+# ── 7. Run the pipeline ──────────────────────────────────────────────
 cd "$PIPELINE_DIR"
-PIPELINE_OUTPUT_FILE="$(mktemp)"
-python main.py 2>&1 | tee "$PIPELINE_OUTPUT_FILE"
+python main.py
 cd "$REPO_ROOT"
 
 echo ""
 echo "Pipeline finished for blob: $INPUT_BLOB_NAME"
 
-# ── 8. Extract the MLflow run ID from the pipeline logs ───────────────
-RUN_ID=$(python3 -c "
-import sys, json
-for line in open('${PIPELINE_OUTPUT_FILE}'):
-    try:
-        record = json.loads(line)
-        msg = record.get('message', '')
-        if 'Pipeline finished' in msg and 'run_id=' in msg:
-            # Message format: '... run_id=<uuid> ...'
-            run_id = msg.split('run_id=')[1].split()[0]
-            print(run_id)
-            break
-    except Exception:
-        continue
-")
-rm -f "$PIPELINE_OUTPUT_FILE"
+# ── 8. Fetch and display model evaluation report from MLflow ─────────
+echo ""
+echo "Fetching evaluation report from MLflow..."
 
-if [[ -z "${RUN_ID}" ]]; then
-    echo "WARNING: Could not extract run ID from pipeline output."
-    echo "Skipping evaluation report fetch."
-else
-    echo "Pipeline run ID: ${RUN_ID}"
-    echo ""
-    echo "Fetching evaluation report..."
-
-    python3 -c "
+python3 - <<PYEOF
+import os, json, tempfile
+from pathlib import Path
+from mlflow import MlflowClient
 from mlflow.artifacts import download_artifacts
-import json, tempfile
-run_id = '${RUN_ID}'
-with tempfile.TemporaryDirectory() as tmp:
-    local = download_artifacts(
-        artifact_uri=f'runs:/{run_id}/reports/metrics.json',
-        dst_path=tmp,
-        tracking_uri='${MLFLOW_TRACKING_URI}'
-    )
-    metrics = json.load(open(local))
-    # -- Pretty‑print the relevant sections --------------------------------
-    eval_data = metrics.get('evaluation', {})
-    val = eval_data.get('validation', {})
-    test = eval_data.get('test', {})
-    print('==============================================================')
-    print('                 MODEL EVALUATION REPORT')
-    print('==============================================================')
-    print(f' Run ID          : {run_id}')
-    print(f' ONNX SHA256     : {metrics.get(\"onnx_sha256\", \"N/A\")}')
-    print(f' Best iteration  : {metrics.get(\"best_iteration\", \"N/A\")}')
-    if metrics.get('onnx_performance'):
-        perf = metrics['onnx_performance']
-        print(f' P50 latency     : {perf.get(\"p50_latency_ms\", \"N/A\")} ms')
-        print(f' P95 latency     : {perf.get(\"p95_latency_ms\", \"N/A\")} ms')
-        print(f' Throughput      : {perf.get(\"throughput_rows_per_sec\", \"N/A\"):,.0f} rows/s')
-    print()
-    print(' Validation metrics:')
-    for k, v in val.items():
-        print(f'   {k:30s} {v}')
-    print()
-    print(' Test metrics:')
-    for k, v in test.items():
-        print(f'   {k:30s} {v}')
-    print()
-    fi = metrics.get('feature_importance', [])
-    if fi:
-        print(' Top 5 features (gain):')
-        for rank, feat in enumerate(fi[:5], 1):
-            print(f'   {rank}. {feat[\"feature\"]:30s} {feat[\"gain\"]:.4f}')
-    print('==============================================================')
-"
-fi
+
+tracking_uri = os.environ["MLFLOW_TRACKING_URI"]
+experiment_name = os.environ.get("MLFLOW_EXPERIMENT_NAME", "training_pipeline_local_test")
+raw_blob_name = os.environ.get("INPUT_BLOB_NAME", "").replace("/", "_")
+
+client = MlflowClient(tracking_uri=tracking_uri)
+
+# Find the latest completed run for this blob by reading the training checkpoint
+# We'll get the run ID from the checkpoint file (stored in blob storage)
+from azure.identity import AzureCliCredential
+from azure.storage.blob import BlobServiceClient
+import io
+
+cred = AzureCliCredential()
+blob_client = BlobServiceClient(
+    account_url=f'https://{os.environ["AZURE_STORAGE_ACCOUNT_NAME"]}.blob.core.windows.net',
+    credential=cred,
+)
+checkpoint_blob = f"training/{raw_blob_name.replace('.parquet','')}.json"
+container_client = blob_client.get_container_client("checkpoints")
+try:
+    blob_data = container_client.download_blob(checkpoint_blob).readall()
+    checkpoint = json.loads(blob_data)
+    run_id = checkpoint.get("mlflow_run_id")
+    if not run_id:
+        print("No run_id in checkpoint.")
+        raise SystemExit(1)
+    print(f"Using run_id from checkpoint: {run_id}")
+except Exception as e:
+    print(f"Could not read checkpoint: {e}")
+    # Fallback: get the latest run in the experiment
+    runs = client.search_runs(experiment_ids=[client.get_experiment_by_name(experiment_name).experiment_id],
+                              order_by=["start_time DESC"], max_results=1)
+    if runs:
+        run_id = runs[0].info.run_id
+        print(f"Fallback to latest run: {run_id}")
+    else:
+        print("No runs found in experiment.")
+        raise SystemExit(1)
+
+# Download the metrics report artifact
+try:
+    with tempfile.TemporaryDirectory() as tmp:
+        local_path = download_artifacts(
+            artifact_uri=f"runs:/{run_id}/reports/metrics.json",
+            dst_path=tmp,
+            tracking_uri=tracking_uri,
+        )
+        metrics = json.loads(Path(local_path).read_text())
+        print("\n==============================================================")
+        print("                 MODEL EVALUATION REPORT")
+        print("==============================================================")
+        print(f" Run ID          : {run_id}")
+        print(f" ONNX SHA256     : {checkpoint.get('onnx_sha256', 'N/A')}")
+        print(f" Model version   : {checkpoint.get('model_version', 'N/A')}")
+        print(f" Target threshold: {checkpoint.get('target_threshold', 'N/A')}")
+        print(f" Seed            : {checkpoint.get('seed', 'N/A')}")
+        print()
+        if "evaluation" in metrics:
+            ev = metrics["evaluation"]
+            val = ev.get("validation", {})
+            test = ev.get("test", {})
+            print(" Validation metrics:")
+            for k, v in val.items():
+                print(f"   {k:30s} {v}")
+            print()
+            print(" Test metrics:")
+            for k, v in test.items():
+                print(f"   {k:30s} {v}")
+        else:
+            print("No evaluation metrics found in report.")
+        print()
+        if "feature_importance" in metrics:
+            print(" Top 5 features (gain):")
+            for rank, feat in enumerate(metrics["feature_importance"][:5], 1):
+                print(f"   {rank}. {feat['feature']:30s} {feat['gain']:.4f}")
+        else:
+            print("No feature importance data.")
+        print()
+        if "best_iteration" in metrics:
+            print(f" Best iteration   : {metrics['best_iteration']}")
+        print("==============================================================")
+except Exception as e:
+    print(f"Could not download or parse evaluation report: {e}")
+    print(f"Run ID: {run_id}")
+    print("Check the MLflow UI for the run artifacts.")
+PYEOF
 
 echo ""
 echo "Full pipeline execution completed."
