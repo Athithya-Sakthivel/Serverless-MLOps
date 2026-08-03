@@ -1,17 +1,15 @@
 # =============================================================================
 # CD – Terraform Apply (manual trigger)
 #
-# Single‑phase deployment.  Terraform creates all infrastructure (ACA
-# environment, storage, ACR, ML workspace, Function App, Azure DevOps
-# resources).  run.sh then creates the serving app and training job via
-# Azure CLI (avoiding ARM timeouts), assigns all RBAC roles, deploys the
-# Function code, and creates the Event Grid subscription.
+# Two‑phase deployment.  Phase 1 creates the ACA environment and all other
+# infrastructure.  Phase 2 creates the serving app and training job via Azure
+# CLI, heals them, assigns RBAC, deploys the Function, and creates the Event
+# Grid subscription.
 #
-# The Azure DevOps PAT is fetched from Key Vault at runtime.  No secrets
-# are stored in variable groups.
+# The Azure DevOps PAT is fetched from Key Vault at runtime.
 # =============================================================================
 
-trigger: none                # Manual only – triggered from the Azure DevOps UI
+trigger: none
 
 resources:
   pipelines:
@@ -24,14 +22,12 @@ pool:
   vmImage: ubuntu-24.04
 
 variables:
-  # Non‑secret configuration still comes from the variable group.
-  # The PAT is fetched from Key Vault and is NOT stored in this group.
-  - group: terraform-vars
+  - group: terraform-vars          # AZDO_ORG_SERVICE_URL, TF_VAR_location, TF_VAR_alert_email_address
 
 jobs:
   - deployment: apply_terraform
     displayName: 'Apply Terraform – Staging'
-    environment: staging           # Requires manual approval defined in Azure DevOps
+    environment: staging
     strategy:
       runOnce:
         deploy:
@@ -41,10 +37,7 @@ jobs:
               fetchDepth: 1
 
             # ----------------------------------------------------------------
-            # Step 1 – Determine the bootstrap Key Vault name.
-            # The bootstrap Key Vault always follows the naming pattern
-            #   kv-azdo-bootstrap-<subscription-suffix>
-            # We derive it from the active subscription ID.
+            # Resolve the bootstrap Key Vault name from the subscription suffix
             # ----------------------------------------------------------------
             - task: AzureCLI@2
               displayName: 'Resolve bootstrap Key Vault name'
@@ -54,19 +47,12 @@ jobs:
                 scriptLocation: inlineScript
                 inlineScript: |
                   set -euo pipefail
-
                   SUB_ID="$(az account show --query id -o tsv)"
-                  SUFFIX="${SUB_ID: -6}"
-                  KV_NAME="kv-azdo-bootstrap-${SUFFIX}"
-
-                  echo "Bootstrap Key Vault name: ${KV_NAME}"
-                  echo "##vso[task.setvariable variable=bootstrapKvName;issecret=false]${KV_NAME}"
+                  KV_NAME="kv-azdo-bootstrap-${SUB_ID: -6}"
+                  echo "##vso[task.setvariable variable=bootstrapKvName]${KV_NAME}"
 
             # ----------------------------------------------------------------
-            # Step 2 – Fetch the Azure DevOps PAT from Key Vault.
-            # The CD service principal (bootstrap-cd) already has the
-            # "Key Vault Secrets User" role on the bootstrap Key Vault.
-            # The secret is exposed as a pipeline variable $(azdo-pat).
+            # Fetch the Azure DevOps PAT from Key Vault
             # ----------------------------------------------------------------
             - task: AzureKeyVault@2
               displayName: 'Fetch azdo-pat from Key Vault'
@@ -74,16 +60,39 @@ jobs:
                 azureSubscription: 'azdo-oidc-cd'
                 KeyVaultName: '$(bootstrapKvName)'
                 SecretsFilter: 'azdo-pat'
-                RunAsPreJob: false
 
             # ----------------------------------------------------------------
-            # Step 3 – Run the full deployment.
-            # The PAT fetched from Key Vault is injected into the environment
-            # as AZDO_PERSONAL_ACCESS_TOKEN, which the azuredevops Terraform
-            # provider and run.sh both expect.
+            # Phase 1 – Infrastructure only (no Container Apps)
             # ----------------------------------------------------------------
             - task: AzureCLI@2
-              displayName: 'Deploy infrastructure + Container Apps + Function + Event Grid'
+              displayName: 'Phase 1 – Infrastructure (skip ACA)'
+              inputs:
+                azureSubscription: 'azdo-oidc-cd'
+                addSpnToEnvironment: true
+                scriptType: bash
+                scriptLocation: inlineScript
+                inlineScript: |
+                  set -euo pipefail
+                  cd "$(Build.SourcesDirectory)/src/terraform/main"
+                  chmod +x ./run.sh
+                  export ARM_CLIENT_ID="$servicePrincipalId"
+                  export ARM_TENANT_ID="$tenantId"
+                  export ARM_OIDC_TOKEN="$idToken"
+                  export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+                  export ARM_USE_OIDC="true"
+                  export TF_IN_AUTOMATION="true"
+                  ./run.sh --create --env staging --skip-aca
+              env:
+                AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
+                AZDO_PERSONAL_ACCESS_TOKEN: $(azdo-pat)
+                TF_VAR_location: $(TF_VAR_location)
+                TF_VAR_alert_email_address: $(TF_VAR_alert_email_address)
+
+            # ----------------------------------------------------------------
+            # Phase 2 – Full deploy (serving app, training job, Function, Event Grid)
+            # ----------------------------------------------------------------
+            - task: AzureCLI@2
+              displayName: 'Phase 2 – Full deploy with ACA + Function + Event Grid'
               inputs:
                 azureSubscription: 'azdo-oidc-cd'
                 addSpnToEnvironment: true
@@ -101,9 +110,7 @@ jobs:
                   export TF_IN_AUTOMATION="true"
                   ./run.sh --create --env staging
               env:
-                # Non‑secret config from the variable group
                 AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
+                AZDO_PERSONAL_ACCESS_TOKEN: $(azdo-pat)
                 TF_VAR_location: $(TF_VAR_location)
                 TF_VAR_alert_email_address: $(TF_VAR_alert_email_address)
-                # PAT fetched from Key Vault
-                AZDO_PERSONAL_ACCESS_TOKEN: $(azdo-pat)

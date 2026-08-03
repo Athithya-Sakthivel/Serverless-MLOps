@@ -1,116 +1,172 @@
 # =============================================================================
-# CD – Terraform Apply (manual trigger)
+# CD – Training Job (staging only, no approvals)
 #
-# Two‑phase deployment.  Phase 1 creates the ACA environment and all other
-# infrastructure.  Phase 2 creates the serving app and training job via Azure
-# CLI, heals them, assigns RBAC, deploys the Function, and creates the Event
-# Grid subscription.
-#
-# The Azure DevOps PAT is fetched from Key Vault at runtime.
+# Triggered when either the ELT CI or ML‑Training CI pipeline succeeds on
+# main.  Builds the training image, scans it, pushes to ACR, ensures the
+# job identity has AcrPull, then updates the training job's image tag.
 # =============================================================================
 
 trigger: none
 
 resources:
   pipelines:
-    - pipeline: ciTerraform
-      source: Serverless-MLOps-terraform-ci
-      branch: main
-      trigger: none
+    - pipeline: ciElt
+      source: Serverless-MLOps-elt-ci
+      trigger:
+        branches:
+          include:
+            - main
+    - pipeline: ciMlTraining
+      source: Serverless-MLOps-ml-training-ci
+      trigger:
+        branches:
+          include:
+            - main
 
 pool:
   vmImage: ubuntu-24.04
 
 variables:
-  - group: terraform-vars          # AZDO_ORG_SERVICE_URL, TF_VAR_location, TF_VAR_alert_email_address
+  - group: sm-all-vars            # Contains containerRegistry, STAGING_RG, CONTAINER_APP_JOB_NAME, etc.
 
-jobs:
-  - deployment: apply_terraform
-    displayName: 'Apply Terraform – Staging'
-    environment: staging
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-            - checkout: self
-              clean: true
-              fetchDepth: 1
+stages:
+  # --------------------------------------------------------------------------
+  # Stage 1 – Build, scan, and push the training image
+  # --------------------------------------------------------------------------
+  - stage: build
+    displayName: 'Build & Push Training Image'
+    jobs:
+      - job: build_push
+        displayName: 'Build, scan and push training container'
+        steps:
+          - checkout: self
+            clean: true
+            fetchDepth: 1
 
-            # ----------------------------------------------------------------
-            # Resolve the bootstrap Key Vault name from the subscription suffix
-            # ----------------------------------------------------------------
-            - task: AzureCLI@2
-              displayName: 'Resolve bootstrap Key Vault name'
-              inputs:
-                azureSubscription: 'azdo-oidc-cd'
-                scriptType: bash
-                scriptLocation: inlineScript
-                inlineScript: |
-                  set -euo pipefail
-                  SUB_ID="$(az account show --query id -o tsv)"
-                  KV_NAME="kv-azdo-bootstrap-${SUB_ID: -6}"
-                  echo "##vso[task.setvariable variable=bootstrapKvName]${KV_NAME}"
+          - task: AzureCLI@2
+            name: buildOutput
+            displayName: 'Build, scan & push training image'
+            inputs:
+              azureSubscription: 'azdo-oidc-cd'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
 
-            # ----------------------------------------------------------------
-            # Fetch the Azure DevOps PAT from Key Vault
-            # ----------------------------------------------------------------
-            - task: AzureKeyVault@2
-              displayName: 'Fetch azdo-pat from Key Vault'
-              inputs:
-                azureSubscription: 'azdo-oidc-cd'
-                KeyVaultName: '$(bootstrapKvName)'
-                SecretsFilter: 'azdo-pat'
+                LOGIN_SERVER="$(az acr show --name "$CONTAINER_REGISTRY" --query loginServer -o tsv)"
+                IMAGE_TAG="training-${BUILD_SOURCE_VERSION}"
+                FULL_IMAGE="${LOGIN_SERVER}/training:${IMAGE_TAG}"
 
-            # ----------------------------------------------------------------
-            # Phase 1 – Infrastructure only (no Container Apps)
-            # ----------------------------------------------------------------
-            - task: AzureCLI@2
-              displayName: 'Phase 1 – Infrastructure (skip ACA)'
-              inputs:
-                azureSubscription: 'azdo-oidc-cd'
-                addSpnToEnvironment: true
-                scriptType: bash
-                scriptLocation: inlineScript
-                inlineScript: |
-                  set -euo pipefail
-                  cd "$(Build.SourcesDirectory)/src/terraform/main"
-                  chmod +x ./run.sh
-                  export ARM_CLIENT_ID="$servicePrincipalId"
-                  export ARM_TENANT_ID="$tenantId"
-                  export ARM_OIDC_TOKEN="$idToken"
-                  export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
-                  export ARM_USE_OIDC="true"
-                  export TF_IN_AUTOMATION="true"
-                  ./run.sh --create --env staging --skip-aca
-              env:
-                AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
-                AZDO_PERSONAL_ACCESS_TOKEN: $(azdo-pat)
-                TF_VAR_location: $(TF_VAR_location)
-                TF_VAR_alert_email_address: $(TF_VAR_alert_email_address)
+                echo "##[section]Building training image: ${FULL_IMAGE}"
+                az acr login --name "$CONTAINER_REGISTRY"
+                docker build \
+                  -f src/workloads/training_pipeline/Dockerfile \
+                  -t "${FULL_IMAGE}" \
+                  src/workloads/training_pipeline
 
-            # ----------------------------------------------------------------
-            # Phase 2 – Full deploy (serving app, training job, Function, Event Grid)
-            # ----------------------------------------------------------------
-            - task: AzureCLI@2
-              displayName: 'Phase 2 – Full deploy with ACA + Function + Event Grid'
-              inputs:
-                azureSubscription: 'azdo-oidc-cd'
-                addSpnToEnvironment: true
-                scriptType: bash
-                scriptLocation: inlineScript
-                inlineScript: |
-                  set -euo pipefail
-                  cd "$(Build.SourcesDirectory)/src/terraform/main"
-                  chmod +x ./run.sh
-                  export ARM_CLIENT_ID="$servicePrincipalId"
-                  export ARM_TENANT_ID="$tenantId"
-                  export ARM_OIDC_TOKEN="$idToken"
-                  export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
-                  export ARM_USE_OIDC="true"
-                  export TF_IN_AUTOMATION="true"
-                  ./run.sh --create --env staging
-              env:
-                AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
-                AZDO_PERSONAL_ACCESS_TOKEN: $(azdo-pat)
-                TF_VAR_location: $(TF_VAR_location)
-                TF_VAR_alert_email_address: $(TF_VAR_alert_email_address)
+                echo "##[section]Scanning image with Trivy (CRITICAL only)"
+                TRIVY_VERSION="0.72.0"
+                curl -fsSL --retry 3 --connect-timeout 10 \
+                  -o /tmp/trivy.tar.gz \
+                  "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+                tar -xzf /tmp/trivy.tar.gz -C /tmp trivy
+                chmod +x /tmp/trivy
+
+                /tmp/trivy image \
+                  --severity CRITICAL \
+                  --exit-code 1 \
+                  "${FULL_IMAGE}"
+
+                echo "##[section]Pushing image: ${FULL_IMAGE}"
+                docker push "${FULL_IMAGE}"
+
+                echo "##vso[task.setvariable variable=trainingImage;isOutput=true]${FULL_IMAGE}"
+            env:
+              CONTAINER_REGISTRY: $(containerRegistry)
+              BUILD_SOURCE_VERSION: $(Build.SourceVersion)
+
+  # --------------------------------------------------------------------------
+  # Stage 2 – Deploy to staging (idempotent)
+  # --------------------------------------------------------------------------
+  - stage: staging
+    displayName: 'Deploy to Staging'
+    dependsOn: build
+    condition: succeeded()
+    variables:
+      trainingImage: $[ stageDependencies.build.build_push.outputs['buildOutput.trainingImage'] ]
+    jobs:
+      - job: deploy_staging
+        displayName: 'Update ACA Job – Staging'
+        steps:
+          # ------------------------------------------------------------------
+          # Step 1 – Ensure the job's managed identity can pull from ACR.
+          # ------------------------------------------------------------------
+          - task: AzureCLI@2
+            displayName: 'Ensure job has AcrPull role'
+            inputs:
+              azureSubscription: 'azdo-oidc-cd'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                az extension add --name containerapp --upgrade --yes 2>/dev/null || true
+
+                # Derive subscription ID from the active Azure CLI session
+                SUB_ID="$(az account show --query id -o tsv)"
+
+                JOB_PRINCIPAL=$(az containerapp job show \
+                  --name "${CONTAINER_APP_JOB_NAME}" \
+                  --resource-group "${STAGING_RG}" \
+                  --query "identity.principalId" -o tsv)
+
+                ACR_ID="/subscriptions/${SUB_ID}/resourceGroups/${STAGING_RG}/providers/Microsoft.ContainerRegistry/registries/${CONTAINER_REGISTRY}"
+
+                EXISTING=$(az role assignment list \
+                  --assignee "$JOB_PRINCIPAL" \
+                  --role "AcrPull" \
+                  --scope "$ACR_ID" \
+                  --query "[0].id" -o tsv 2>/dev/null || true)
+
+                if [[ -z "$EXISTING" ]]; then
+                  echo "Assigning AcrPull to job identity..."
+                  az role assignment create \
+                    --assignee-object-id "$JOB_PRINCIPAL" \
+                    --assignee-principal-type ServicePrincipal \
+                    --role "AcrPull" \
+                    --scope "$ACR_ID" \
+                    --output none
+                  echo "AcrPull assigned. Waiting 30s for propagation..."
+                  sleep 30
+                else
+                  echo "AcrPull already assigned."
+                fi
+            env:
+              CONTAINER_APP_JOB_NAME: $(CONTAINER_APP_JOB_NAME)
+              STAGING_RG: $(STAGING_RG)
+              CONTAINER_REGISTRY: $(containerRegistry)
+
+          # ------------------------------------------------------------------
+          # Step 2 – Update the training job image.
+          # ------------------------------------------------------------------
+          - task: AzureCLI@2
+            displayName: 'Update training job image'
+            inputs:
+              azureSubscription: 'azdo-oidc-cd'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                az extension add --name containerapp --upgrade --yes 2>/dev/null || true
+
+                echo "Updating training job image to: ${TRAINING_IMAGE}"
+                az containerapp job update \
+                  --name "${CONTAINER_APP_JOB_NAME}" \
+                  --resource-group "${STAGING_RG}" \
+                  --image "${TRAINING_IMAGE}" \
+                  --output none
+
+                echo "Staging deployment complete."
+            env:
+              CONTAINER_APP_JOB_NAME: $(CONTAINER_APP_JOB_NAME)
+              STAGING_RG: $(STAGING_RG)
+              TRAINING_IMAGE: $(trainingImage)
