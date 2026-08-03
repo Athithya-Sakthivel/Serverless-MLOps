@@ -485,9 +485,16 @@ create_event_grid_subscription() {
 # ===========================================================================
 nuclear_destroy() {
   log "starting nuclear destroy for $ENVIRONMENT"
-  derive_names
-  local sub="${AZURE_SUBSCRIPTION_ID: -6}" loc="eastus2"
-  local rg="$RG_NAME"
+  derive_names   # sets RG_NAME, STORAGE_ACCOUNT_NAME, etc.
+
+  local sub="${AZURE_SUBSCRIPTION_ID: -6}"
+  local loc="eastus2"
+  local env_abbr
+  case "$ENVIRONMENT" in
+    staging) env_abbr="stg" ;;
+    prod)    env_abbr="prod" ;;
+    *)       fail "unknown environment: $ENVIRONMENT" ;;
+  esac
 
   log "breaking state lock if present"
   az storage blob lease break \
@@ -495,14 +502,14 @@ nuclear_destroy() {
     --container-name "$TF_BACKEND_CONTAINER" --account-name "$TF_BACKEND_STORAGE_ACCOUNT" \
     --auth-mode login 2>/dev/null || true
 
-  log "deleting resource group: $rg"
-  if az group show -n "$rg" &>/dev/null; then
-    az group delete -n "$rg" --yes
-    while az group show -n "$rg" &>/dev/null; do sleep 15; done
+  log "deleting resource group: ${RG_NAME}"
+  if az group show -n "$RG_NAME" &>/dev/null; then
+    az group delete -n "$RG_NAME" --yes
+    while az group show -n "$RG_NAME" &>/dev/null; do sleep 15; done
   fi
 
-  local kv="kv-sm${ENV_ABBR}ml${sub}"
-  local ml="mlw-sm-${ENV_ABBR}"
+  local kv="kv-sm${env_abbr}ml${sub}"
+  local ml="mlw-sm-${env_abbr}"
   log "purging soft-deleted Key Vault ${kv} and ML workspace ${ml}"
   az keyvault purge -n "$kv" 2>/dev/null || true
   az rest --method delete \
