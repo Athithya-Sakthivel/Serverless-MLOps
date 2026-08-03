@@ -98,12 +98,6 @@ stages:
       - job: deploy_staging
         displayName: 'Update ACA Job – Staging'
         steps:
-          # ------------------------------------------------------------------
-          # Step 1 – Ensure the job's managed identity can pull from ACR.
-          # This is idempotent: checks if AcrPull exists before creating.
-          # run.sh assigns this role during job creation, but the CD pipeline
-          # may update the image without re‑running run.sh, so we verify here.
-          # ------------------------------------------------------------------
           - task: AzureCLI@2
             displayName: 'Ensure job has AcrPull role'
             inputs:
@@ -140,17 +134,12 @@ stages:
                 else
                   echo "AcrPull already assigned."
                 fi
-              env:
-                CONTAINER_APP_JOB_NAME: $(CONTAINER_APP_JOB_NAME)
-                STAGING_RG: $(STAGING_RG)
-                CONTAINER_REGISTRY: $(containerRegistry)
-                SUBSCRIPTION_ID: $(subscriptionId)
+            env:
+              CONTAINER_APP_JOB_NAME: $(CONTAINER_APP_JOB_NAME)
+              STAGING_RG: $(STAGING_RG)
+              CONTAINER_REGISTRY: $(containerRegistry)
+              SUBSCRIPTION_ID: $(subscriptionId)
 
-          # ------------------------------------------------------------------
-          # Step 2 – Update the training job image.
-          # The job's configuration (manual trigger, env vars, identity) is
-          # preserved because only --image is changed.
-          # ------------------------------------------------------------------
           - task: AzureCLI@2
             displayName: 'Update training job image'
             inputs:
@@ -169,7 +158,7 @@ stages:
                   --output none
 
                 echo "Staging deployment complete."
-              env:
-                CONTAINER_APP_JOB_NAME: $(CONTAINER_APP_JOB_NAME)
-                STAGING_RG: $(STAGING_RG)
-                TRAINING_IMAGE: $(trainingImage)
+            env:
+              CONTAINER_APP_JOB_NAME: $(CONTAINER_APP_JOB_NAME)
+              STAGING_RG: $(STAGING_RG)
+              TRAINING_IMAGE: $(trainingImage)
