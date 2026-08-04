@@ -43,3 +43,10 @@ CVE-2025-7458
 
 # Debian marks this as will_not_fix for Bookworm
 CVE-2023-45853
+
+
+# azureml-mlflow currently requires cryptography<49. Upgrading to the fixed version is blocked until Azure ML updates its dependency constraints.
+CVE-2026-69247
+
+# azureml-mlflow currently requires cryptography<49. Fixed version cannot be adopted yet.
+CVE-2026-69249
