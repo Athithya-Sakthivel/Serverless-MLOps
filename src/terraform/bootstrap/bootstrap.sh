@@ -8,6 +8,7 @@
 #   3) Initialize/apply the bootstrap Terraform stack.
 #   4) Write generated backend variables for src/terraform/main.
 #   5) Write a real tracked file under src/terraform/main to trigger CI.
+#   6) Assign local development roles (idempotent).
 #
 # bash src/terraform/bootstrap/bootstrap.sh --create
 # bash src/terraform/bootstrap/bootstrap.sh --delete --force
@@ -15,6 +16,9 @@
 # Notes:
 #   - Bootstrap state uses access_key auth to avoid Azure CLI credential clashes.
 #   - Main stack backend config is generated separately for run.sh to consume.
+#   - The current user is granted Key Vault Secrets Officer on the state
+#     resource group BEFORE tofu apply, so Terraform can create secrets in
+#     the soon‑to‑be‑created Key Vault without a 403 Forbidden error.
 # ==============================================================================
 
 IFS=$'\n\t'
@@ -38,28 +42,17 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd -P)"
 BOOTSTRAP_ENV_FILE="$REPO_ROOT/src/terraform/main/.bootstrap.generated.env"
 TRIGGER_FILE="$REPO_ROOT/src/terraform/main/.trigger/azure-devops-bootstrap.txt"
 
-az role assignment create \
-  --assignee $(az ad signed-in-user show --query id -o tsv) \
-  --role "Key Vault Secrets User" \
-  --scope "/subscriptions/b1e221f4-74ef-4e62-9bca-fb70aef41930/resourceGroups/rg-sm-state-f41930/providers/Microsoft.KeyVault/vaults/kv-azdo-bootstrap-f41930"
-
-  
-log() { printf '[%s] %s\n' "$(date +'%H:%M:%S')" "$*"; }
-fail() { log "ERROR: $*" >&2; exit 1; }
+log()   { printf '[%s] %s\n' "$(date +'%H:%M:%S')" "$*"; }
+fail()  { log "ERROR: $*" >&2; exit 1; }
 require_cmd() { command -v "$1" >/dev/null 2>&1 || fail "$1 missing"; }
 require_var() { [[ -n "${!1:-}" ]] || fail "missing required environment variable: $1"; }
 
 retry() {
-  local attempts="$1"
-  shift
-  local delay=2
-  local i
+  local attempts="$1"; shift
+  local delay=2 i
   for ((i = 1; i <= attempts; i++)); do
-    if "$@"; then
-      return 0
-    fi
-    sleep "$delay"
-    delay=$((delay * 2))
+    if "$@"; then return 0; fi
+    sleep "$delay"; delay=$((delay * 2))
   done
   return 1
 }
@@ -101,15 +94,15 @@ find_project_id() {
 find_service_endpoint_id() {
   local encoded_name
   encoded_name="$(urlencode "$SERVICE_ENDPOINT_NAME")"
-  azdo_get "$AZDO_ORG_URL/$PROJECT_NAME/_apis/serviceendpoint/endpoints?endpointNames=${encoded_name}&api-version=7.1" |
-    json_first_match_id "$SERVICE_ENDPOINT_NAME"
+  azdo_get "$AZDO_ORG_URL/$PROJECT_NAME/_apis/serviceendpoint/endpoints?endpointNames=${encoded_name}&api-version=7.1" \
+    | json_first_match_id "$SERVICE_ENDPOINT_NAME"
 }
 
 find_build_definition_id() {
   local encoded_name
   encoded_name="$(urlencode "$1")"
-  azdo_get "$AZDO_ORG_URL/$PROJECT_NAME/_apis/build/definitions?name=${encoded_name}&api-version=7.1" |
-    json_first_match_id "$1"
+  azdo_get "$AZDO_ORG_URL/$PROJECT_NAME/_apis/build/definitions?name=${encoded_name}&api-version=7.1" \
+    | json_first_match_id "$1"
 }
 
 resolve_git_remote() {
@@ -120,22 +113,19 @@ resolve_git_remote() {
 
   case "$remote_url" in
     https://github.com/*) repo_path="${remote_url#https://github.com/}" ;;
-    git@github.com:*) repo_path="${remote_url#git@github.com:}" ;;
+    git@github.com:*)     repo_path="${remote_url#git@github.com:}" ;;
     ssh://git@github.com/*) repo_path="${remote_url#ssh://git@github.com/}" ;;
     *) return 1 ;;
   esac
 
   repo_path="${repo_path%.git}"
-  GITHUB_OWNER="${repo_path%%/*}"
-  GITHUB_REPO="${repo_path##*/}"
+  GITHUB_OWNER="${repo_path%%/*}"; GITHUB_REPO="${repo_path##*/}"
   [[ -n "$GITHUB_OWNER" && -n "$GITHUB_REPO" && "$GITHUB_OWNER" != "$GITHUB_REPO" ]] || return 1
   return 0
 }
 
 ensure_backend() {
   log "ensuring Terraform backend resources"
-
-  # Use the pre‑exported names
   log "resource group: $STATE_RG"
   az group create -n "$STATE_RG" -l "$LOCATION" --output none >/dev/null
 
@@ -156,11 +146,8 @@ ensure_backend() {
 
   log "hardening blob service"
   az storage account blob-service-properties update \
-    --resource-group "$STATE_RG" \
-    --account-name "$STATE_STORAGE_ACC_NAME" \
-    --enable-versioning true \
-    --enable-delete-retention true \
-    --delete-retention-days 7 \
+    --resource-group "$STATE_RG" --account-name "$STATE_STORAGE_ACC_NAME" \
+    --enable-versioning true --enable-delete-retention true --delete-retention-days 7 \
     --output none
 
   local key
@@ -170,9 +157,7 @@ ensure_backend() {
   if [[ "$(az storage container exists --name "$STATE_TF_CONTAINER_NAME" --account-name "$STATE_STORAGE_ACC_NAME" --account-key "$key" --query exists -o tsv)" != "true" ]]; then
     log "creating container $STATE_TF_CONTAINER_NAME"
     az storage container create \
-      --name "$STATE_TF_CONTAINER_NAME" \
-      --account-name "$STATE_STORAGE_ACC_NAME" \
-      --account-key "$key" \
+      --name "$STATE_TF_CONTAINER_NAME" --account-name "$STATE_STORAGE_ACC_NAME" --account-key "$key" \
       --output none
   fi
 
@@ -210,8 +195,7 @@ cleanup_generated_files() {
 }
 
 print_pipeline_url() {
-  local definition_id="$1"
-  local label="$2"
+  local definition_id="$1" label="$2"
   if [[ -n "$definition_id" && "$definition_id" != "null" ]]; then
     log "  $label: ${AZDO_ORG_URL}/${PROJECT_NAME}/_build?definitionId=${definition_id}"
   else
@@ -257,13 +241,7 @@ if [[ "$ACTION" == "--delete" && "$FLAG" != "--force" ]]; then
   fail "delete requires --force"
 fi
 
-require_cmd az
-require_cmd tofu
-require_cmd curl
-require_cmd python3
-require_cmd git
-
-# Required environment variables for bootstrap
+require_cmd az tofu curl python3 git
 require_var TF_VAR_AZDO_ORG_SERVICE_URL
 require_var TF_VAR_AZDO_PERSONAL_ACCESS_TOKEN
 require_var TF_VAR_AZDO_GITHUB_SERVICE_CONNECTION_PAT
@@ -271,9 +249,7 @@ require_var STATE_RG
 require_var STATE_STORAGE_ACC_NAME
 require_var STATE_TF_CONTAINER_NAME
 
-# Ensure SUBSCRIPTION_SUFFIX is available for project naming
 if [[ -z "${SUBSCRIPTION_SUFFIX:-}" ]]; then
-  # try to derive from AZURE_SUBSCRIPTION_ID or fail
   if [[ -n "${AZURE_SUBSCRIPTION_ID:-}" ]]; then
     SUBSCRIPTION_SUFFIX="${AZURE_SUBSCRIPTION_ID: -6}"
   else
@@ -281,13 +257,11 @@ if [[ -z "${SUBSCRIPTION_SUFFIX:-}" ]]; then
   fi
 fi
 
-# Use the pre‑exported names directly
 STATE_RG="${STATE_RG}"
 STATE_SA="${STATE_STORAGE_ACC_NAME}"
 STATE_CONTAINER="${STATE_TF_CONTAINER_NAME}"
 STATE_KEY="bootstrap/terraform.tfstate"
 
-# The bootstrap stack itself uses access‑key auth (avoids Azure CLI credential clashes)
 unset ARM_CLIENT_ID ARM_TENANT_ID ARM_SUBSCRIPTION_ID ARM_ACCESS_KEY ARM_OIDC_TOKEN ARM_OIDC_TOKEN_FILE_PATH ARM_USE_OIDC ARM_USE_AZUREAD || true
 export ARM_USE_CLI="true"
 
@@ -304,9 +278,7 @@ case "$AZDO_ORG_URL" in
     AZDO_ORG_NAME="${AZDO_ORG_URL#https://dev.azure.com/}"
     AZDO_ORG_NAME="${AZDO_ORG_NAME%%/*}"
     ;;
-  *)
-    fail "unable to derive organization name from URL"
-    ;;
+  *) fail "unable to derive organization name from URL" ;;
 esac
 [[ -n "$AZDO_ORG_NAME" ]] || fail "organization name empty"
 
@@ -320,7 +292,6 @@ export TF_VAR_azurerm_tenant_id="$TENANT_ID"
 
 az account set --subscription "$SUBSCRIPTION_ID" >/dev/null
 
-# Project name uses SUBSCRIPTION_SUFFIX for uniqueness
 PROJECT_NAME="azdo-bootstrap-${SUBSCRIPTION_SUFFIX}"
 SERVICE_ENDPOINT_NAME="github-pat"
 
@@ -348,6 +319,9 @@ log "state_rg=$STATE_RG state_sa=$STATE_SA state_container=$STATE_CONTAINER stat
 
 cd "$SCRIPT_DIR"
 
+# ---------------------------------------------------------------------------
+# --delete path
+# ---------------------------------------------------------------------------
 if [[ "$ACTION" == "--delete" ]]; then
   log "initializing backend for destroy"
   ensure_backend
@@ -359,21 +333,20 @@ key                  = "$STATE_KEY"
 access_key           = "$BOOTSTRAP_ACCESS_KEY"
 EOF
   tofu init -reconfigure -input=false -no-color -backend-config="$BACKEND_HCL"
-
   log "destroying Terraform resources"
   tofu destroy -auto-approve -input=false -no-color -lock-timeout=5m || true
-
   log "cleaning up Azure DevOps resources"
   delete_azdo_resources
-
   log "deleting backend storage"
   az group delete -n "$STATE_RG" --yes --no-wait >/dev/null 2>&1 || true
-
   cleanup_generated_files
   log "delete complete"
   exit 0
 fi
 
+# ---------------------------------------------------------------------------
+# --create path
+# ---------------------------------------------------------------------------
 ensure_backend
 
 cat >"$BACKEND_HCL" <<EOF
@@ -394,8 +367,41 @@ tofu validate -no-color
 log "planning"
 tofu plan -input=false -no-color -lock-timeout=5m -out=tfplan
 
+# ---------------------------------------------------------------------------
+# Grant the current user Key Vault Secrets Officer on the state resource
+# group.  The Key Vault will inherit this permission, allowing Terraform to
+# create secrets without a 403 Forbidden error.
+# ---------------------------------------------------------------------------
+KV_RG="/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${STATE_RG}"
+USER_OBJECT_ID="$(az ad signed-in-user show --query id -o tsv)"
+
+EXISTING=$(az role assignment list \
+  --assignee "$USER_OBJECT_ID" \
+  --role "Key Vault Secrets Officer" \
+  --scope "$KV_RG" \
+  --query "[0].id" -o tsv 2>/dev/null || true)
+
+if [[ -z "$EXISTING" ]]; then
+  log "Granting Key Vault Secrets Officer to current user on ${KV_RG}..."
+  az role assignment create \
+    --assignee-object-id "$USER_OBJECT_ID" \
+    --assignee-principal-type User \
+    --role "Key Vault Secrets Officer" \
+    --scope "$KV_RG" \
+    --output none
+  log "Role assigned. Waiting 30s for propagation..."
+  
+else
+  log "Key Vault Secrets Officer already assigned – skipping"
+fi
+
+bash "$REPO_ROOT/src/scripts/other_roles.sh" 2>/dev/null 1>&2 || true
+
+sleep 30
+
 log "applying"
 tofu apply -input=false -auto-approve -no-color tfplan
+
 
 write_backend_env_file
 write_trigger_file
@@ -425,7 +431,6 @@ log "bootstrap complete"
 print_pipeline_url "$security_scan_id" "Security Scan Pipeline"
 print_pipeline_url "$terraform_ci_id" "Terraform CI Pipeline"
 print_pipeline_url "$terraform_cd_id" "Terraform CD Pipeline"
-
 log "generated files:"
 log "  $BOOTSTRAP_ENV_FILE"
 log "  $TRIGGER_FILE"

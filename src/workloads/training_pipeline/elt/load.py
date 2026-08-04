@@ -1,4 +1,4 @@
-"""Write clean parquet and manage ELT checkpoints"""
+"""Write clean parquet and manage ELT checkpoints."""
 
 from __future__ import annotations
 
