@@ -8,11 +8,6 @@ ARG PYTHON_IMAGE=docker.io/library/python:3.14.6-slim-bookworm@sha256:86f975aca1
 # ============================================================
 FROM ${PYTHON_IMAGE} AS builder
 
-# Install system dependencies required by LightGBM
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends libgomp1 && \
-    rm -rf /var/lib/apt/lists/*
-    
 WORKDIR /app
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -35,6 +30,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # ============================================================
 FROM ${PYTHON_IMAGE} AS runtime
 
+# Install system dependencies required by LightGBM
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libgomp1 && \
+    rm -rf /var/lib/apt/lists/*
+    
 WORKDIR /app
 
 ENV VIRTUAL_ENV=/opt/venv \

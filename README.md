@@ -93,8 +93,8 @@ export TF_VAR_AZDO_ORG_SERVICE_URL="https://dev.azure.com/<organization_name>"
 export TF_VAR_AZDO_GITHUB_SERVICE_CONNECTION_PAT="<github-pat>" # Generate at https://github.com/settings/tokens/new
 
 # variable group entries for tf main. 
-export TF_VAR_location=  # example centralindia
-export TF_VAR_alert_email_address=  # example athithya651@gmail.com
+export TF_VAR_location=              # example centralindia
+export TF_VAR_alert_email_address=            # example athithya651@gmail.com
 
 # key vault secrets
 export TF_VAR_AZDO_PERSONAL_ACCESS_TOKEN="<azure-devops-pat>"   # Generate at https://dev.azure.com/<organization_name>/_usersSettings/tokens
@@ -122,26 +122,30 @@ Trigger the Terraform CD pipeline manually from the Azure DevOps UI. It provisio
 
 <summary>▶ Expected outputs</summary>
 
+Here's the concise documentation:
 
-## PHASE 2.1: Local Dev Roles & Seed Data
+---
 
-Assign RBAC roles for local development, then upload sample data to trigger the training pipeline.
+## Phase 2.1: Local Dev Roles & Live Pipeline Test
+
+### 1. Assign RBAC roles (one-time, idempotent) and Run the end-to-end test
 
 ```bash
-
-source .venv/bin/activate
 bash src/scripts/other_roles.sh
-export HF_TOKEN=$HF_TOKEN # Optional huggingface token for faster download
-export MAX_DATASET_ROWS=1_000_000 
-export ARTIFACTS_STORAGE_ACC_NAME="$(cd /workspace/src/terraform/main && tofu output -raw storage_account_name)"
-python3 src/scripts/simulate_data_upload.py
-
-APP_ID=$(cd /workspace/src/terraform/main && tofu output -raw application_insights_instrumentation_key 2>/dev/null || \
-  az monitor app-insights component show -g rg-sm-artifacts-stg -a appi-sm-stg --query appId -o tsv)
-
+source .venv/bin/activate
+export HF_TOKEN=$HF_TOKEN    # Optional huggingface token for faster download
+export MAX_DATASET_ROWS=1_000_000 # Can be increased upto 9.8M rows
+python3 src/scripts/live_training_pipeline.py --env staging --upload
 ```
 
-wait 60 seconds 
+**What it does:** Uploads the ACS (American Community Survey) dataset, then polls Event Grid, Function traces, and ACA job status until the job completes. Collects the job container logs automatically on success or failure.
 
+### 2. Manual health checks (optional)
 
+```bash
+# Function host status
 curl -s "https://func-blob-trigger-stg.azurewebsites.net/admin/host/status?code=$(az functionapp keys list -g rg-sm-artifacts-stg -n func-blob-trigger-stg --query masterKey -o tsv)" | python3 -m json.tool
+
+# ACA job executions
+az containerapp job execution list --name acaj-train-stg --resource-group rg-sm-artifacts-stg -o table
+```
