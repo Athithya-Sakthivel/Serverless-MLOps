@@ -20,6 +20,7 @@
 #   The pipeline exports ARM_CLIENT_ID, ARM_OIDC_TOKEN, ARM_TENANT_ID,
 #   ARM_SUBSCRIPTION_ID, and sets TF_BACKEND_AUTH_MODE=oidc by default.
 #   bash src/terraform/main/run.sh --plan    --env staging
+#   bash src/terraform/main/run.sh --refresh --env staging
 #   bash src/terraform/main/run.sh --create  --env staging --skip-aca
 #   bash src/terraform/main/run.sh --create  --env staging
 # ==============================================================================
@@ -562,7 +563,7 @@ deploy_function_code() {
 MODE=""; ENVIRONMENT=""; PLAN_FILE_INPUT=""; YES_DELETE=false; SKIP_ACA=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --plan|--create|--validate|--destroy) MODE="$1"; shift ;;
+    --plan|--create|--validate|--destroy|--refresh) MODE="$1"; shift ;;
     --apply-plan) MODE="--apply-plan"; shift; PLAN_FILE_INPUT="${1:-}"; [[ -n "$PLAN_FILE_INPUT" ]] || usage; shift ;;
     --env) ENVIRONMENT="${2:-}"; [[ -n "$ENVIRONMENT" ]] || usage; shift 2 ;;
     --yes-delete) YES_DELETE=true; shift ;;
@@ -634,6 +635,16 @@ VAR_FILE="$SCRIPT_DIR/environments/${ENVIRONMENT}.tfvars"
 
 case "$MODE" in
   --validate) prepare_stack ;;
+    # --------------------------------------------------------------------------
+  # --refresh: refresh the Terraform state from live Azure resources.
+  # Used by the CI pipeline before planning to heal state drift from
+  # previous targeted applies.
+  # --------------------------------------------------------------------------
+  --refresh)
+    init_backend
+    tofu apply -refresh-only -auto-approve -var-file="$VAR_FILE"
+    log "state refreshed from Azure"
+    ;;
   --plan)
     [[ -f "$VAR_FILE" ]] || fail "variable file not found: $VAR_FILE"
     run_plan
