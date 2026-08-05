@@ -31,7 +31,6 @@ pool:
   vmImage: ubuntu-24.04
 
 variables:
-  # Non‑secret configuration created by bootstrap
   - group: terraform-vars          # TF_VAR_location, TF_VAR_alert_email_address,
                                    # AZDO_ORG_SERVICE_URL
 
@@ -42,7 +41,6 @@ steps:
 
   # --------------------------------------------------------------------------
   # Derive the bootstrap Key Vault name from the subscription ID.
-  # The Key Vault always follows the pattern kv-azdo-bootstrap-<suffix>.
   # --------------------------------------------------------------------------
   - task: AzureCLI@2
     displayName: 'Derive Key Vault name'
@@ -59,7 +57,6 @@ steps:
 
   # --------------------------------------------------------------------------
   # Fetch the Azure DevOps PAT from the bootstrap Key Vault.
-  # The CI service principal (bootstrap-ci) has Key Vault Secrets User role.
   # --------------------------------------------------------------------------
   - task: AzureKeyVault@2
     displayName: 'Fetch azdo-pat from Key Vault'
@@ -70,9 +67,6 @@ steps:
 
   # --------------------------------------------------------------------------
   # Refresh the state file from live Azure resources before planning.
-  # Targeted applies (e.g. CD pipeline's --skip-aca) can leave the state
-  # incomplete.  A refresh-only apply reads the current state of every
-  # resource from Azure without making any changes, healing the drift.
   # --------------------------------------------------------------------------
   - task: AzureCLI@2
     displayName: 'Refresh Terraform state from Azure'
@@ -102,15 +96,14 @@ steps:
           >/dev/null
 
         echo "State refreshed from Azure"
-      env:
-        AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
-        AZDO_PERSONAL_ACCESS_TOKEN: $(azdo-pat)
-        TF_VAR_location: $(TF_VAR_location)
-        TF_VAR_alert_email_address: $(TF_VAR_alert_email_address)
+    env:
+      AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
+      AZDO_PERSONAL_ACCESS_TOKEN: $(azdo-pat)
+      TF_VAR_location: $(TF_VAR_location)
+      TF_VAR_alert_email_address: $(TF_VAR_alert_email_address)
 
   # --------------------------------------------------------------------------
-  # Run tofu plan.  The state is now fully in sync with Azure, so this will
-  # never fail on stale attribute values like empty primary_access_key.
+  # Run tofu plan.  The state is now fully in sync with Azure.
   # --------------------------------------------------------------------------
   - task: AzureCLI@2
     displayName: 'Terraform plan'
@@ -130,8 +123,8 @@ steps:
         export ARM_USE_OIDC="true"
         export TF_INPUT="false"
         ./run.sh --plan --env staging
-      env:
-        AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
-        AZDO_PERSONAL_ACCESS_TOKEN: $(azdo-pat)
-        TF_VAR_location: $(TF_VAR_location)
-        TF_VAR_alert_email_address: $(TF_VAR_alert_email_address)
+    env:
+      AZDO_ORG_SERVICE_URL: $(AZDO_ORG_SERVICE_URL)
+      AZDO_PERSONAL_ACCESS_TOKEN: $(azdo-pat)
+      TF_VAR_location: $(TF_VAR_location)
+      TF_VAR_alert_email_address: $(TF_VAR_alert_email_address)
