@@ -641,6 +641,7 @@ case "$MODE" in
   # previous targeted applies.
   # --------------------------------------------------------------------------
   --refresh)
+    install_tofu_if_needed
     init_backend
     tofu apply -refresh-only -auto-approve -var-file="$VAR_FILE"
     log "state refreshed from Azure"
