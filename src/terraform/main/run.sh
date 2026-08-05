@@ -408,6 +408,7 @@ create_training_job() {
       AZURE_STORAGE_ACCOUNT_NAME="$STORAGE_ACCOUNT_NAME" \
       MLFLOW_TRACKING_URI="$mlflow" \
       AZUREML_WORKSPACE_ID="$ML_WORKSPACE_ID" \
+      INPUT_BLOB_NAME="" \
     --output none
 
   wait_for_job_ready 1800 30
@@ -485,7 +486,7 @@ create_event_grid_subscription() {
 # ===========================================================================
 nuclear_destroy() {
   log "starting nuclear destroy for $ENVIRONMENT"
-  derive_names   # sets RG_NAME, STORAGE_ACCOUNT_NAME, etc.
+  derive_names
 
   local sub="${AZURE_SUBSCRIPTION_ID: -6}"
   local loc="eastus2"

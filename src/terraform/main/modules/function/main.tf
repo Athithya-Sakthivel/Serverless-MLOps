@@ -16,7 +16,7 @@ resource "azurerm_service_plan" "this" {
   resource_group_name = var.resource_group_name
   location            = var.location
   os_type             = "Linux"
-  sku_name            = "FC1" # Flex Consumption
+  sku_name            = "FC1"             # Flex Consumption
   tags                = var.tags
 }
 
@@ -31,11 +31,11 @@ resource "azurerm_function_app_flex_consumption" "this" {
 
   # Deployment package is stored in a blob container created by storage.tf
   storage_container_type      = "blobContainer"
-  storage_container_endpoint  = "${azurerm_storage_account.this.primary_blob_endpoint}${azurerm_storage_container.deploymentpackage.name}"
+  storage_container_endpoint   = "${azurerm_storage_account.this.primary_blob_endpoint}${azurerm_storage_container.deploymentpackage.name}"
   storage_authentication_type = "StorageAccountConnectionString"
   storage_access_key          = azurerm_storage_account.this.primary_access_key
 
-  # Python 3.13 – the latest version supported by Flex Consumption
+  # Python 3.11 – the latest version supported by Flex Consumption
   runtime_name    = var.runtime_name
   runtime_version = var.runtime_version
 
@@ -55,16 +55,18 @@ resource "azurerm_function_app_flex_consumption" "this" {
 
   # Application settings – available as environment variables at runtime
   app_settings = {
-    ACA_SUBSCRIPTION_ID         = var.subscription_id
-    ACA_RESOURCE_GROUP_NAME     = var.resource_group_name
-    ACA_JOB_NAME                = var.aca_job_name
-    ACA_JOB_API_VERSION         = var.aca_job_api_version
-    ACA_REQUEST_TIMEOUT_SECONDS = tostring(var.aca_request_timeout_seconds)
+    ACA_SUBSCRIPTION_ID          = var.subscription_id
+    ACA_RESOURCE_GROUP_NAME      = var.resource_group_name
+    ACA_JOB_NAME                 = var.aca_job_name
+    ACA_JOB_API_VERSION          = var.aca_job_api_version
+    ACA_REQUEST_TIMEOUT_SECONDS  = tostring(var.aca_request_timeout_seconds)
 
+    # Identity‑based connection – all three parts are required
     SOURCE_STORAGE__blobServiceUri  = var.source_storage_account_blob_endpoint
     SOURCE_STORAGE__queueServiceUri = "https://${var.source_storage_account_name}.queue.core.windows.net/"
     SOURCE_STORAGE__credential      = "managedidentity"
 
+    # Optional: improve Python indexing/startup performance
     PYTHON_ENABLE_INIT_INDEXING = "1"
   }
 

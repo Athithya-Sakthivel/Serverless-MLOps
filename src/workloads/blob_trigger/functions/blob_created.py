@@ -33,7 +33,8 @@ logger = logging.getLogger(__name__)
 def blob_created(blob: func.InputStream) -> None:
     """
     Called by the Azure Functions runtime whenever a new blob matches
-    the trigger path.  Starts the ACA training job via ARM REST API.
+    the trigger path.  Starts the ACA training job via ARM REST API,
+    passing the blob name so the pipeline knows which file to process.
     """
     settings = get_settings()
 
@@ -56,4 +57,5 @@ def blob_created(blob: func.InputStream) -> None:
     start_training_job(
         settings=settings,
         logger=logger,
+        blob_name=blob_name,
     )

@@ -17,7 +17,8 @@ tags = {
 environment = "staging"
 
 storage_container_names   = ["raw", "clean", "models", "logs"]
-shared_access_key_enabled = true
+shared_access_key_enabled = true # required to avoid premature validations
+
 
 enable_request_failures_alert    = true
 enable_slow_requests_alert       = false
